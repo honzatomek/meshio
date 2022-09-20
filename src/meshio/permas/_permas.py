@@ -21,14 +21,14 @@ permas_to_meshio_type = {
     "BETAC": "line",
     "BECOP": "line",
     "BETOP": "line",
-    "BEAM2": "line",
     "FSCPIPE2": "line",
+    "BEAM2": "line",
     "LOADA4": "quad",
     "PLOTA4": "quad",
-    "QUAD4": "quad",
     "QUAD4S": "quad",
     "QUAMS4": "quad",
     "SHELL4": "quad",
+    "QUAD4": "quad",
     "PLOTA8": "quad8",
     "LOADA8": "quad8",
     "QUAMS8": "quad8",
@@ -37,14 +37,15 @@ permas_to_meshio_type = {
     "QUAMS9": "quad9",
     "PLOTA3": "triangle",
     "SHELL3": "triangle",
-    "TRIA3": "triangle",
     "TRIA3K": "triangle",
     "TRIA3S": "triangle",
     "TRIMS3": "triangle",
+    "TRIA3": "triangle",
     "LOADA6": "triangle6",
     "TRIMS6": "triangle6",
-    "HEXE8": "hexahedron",
+    "TRIA6": "triangle6",
     "HEXFO8": "hexahedron",
+    "HEXE8": "hexahedron",
     "HEXE20": "hexahedron20",
     "HEXE27": "hexahedron27",
     "TET4": "tetra",
@@ -54,6 +55,13 @@ permas_to_meshio_type = {
     "PENTA15": "wedge15",
 }
 meshio_to_permas_type = {v: k for k, v in permas_to_meshio_type.items()}
+
+element_node_order = {
+    "triangle6": [0, 3, 1, 4, 2, 5],
+    "tetra10": [0, 4, 1, 5, 2, 6, 7, 8, 9, 3],
+    "quad9": [0, 4, 1, 7, 8, 5, 3, 6, 2],
+    "wedge15": [0, 6, 1, 7, 2, 8, 9, 10, 11, 3, 12, 4, 13, 5, 14]
+}
 
 
 def read(filename):
@@ -84,21 +92,23 @@ def read_buffer(f):
 
         keyword = line.strip("$").upper()
         if keyword.startswith("COOR"):
+            params_map = get_param_map(keyword, required_keys=["COOR"])
             points, point_gids = _read_nodes(f)
         elif keyword.startswith("ELEMENT"):
+            params_map = get_param_map(keyword, required_keys=["ELEMENT", "TYPE"])
             key, idx = _read_cells(f, keyword, point_gids)
             cells.append(CellBlock(key, idx))
         elif keyword.startswith("NSET"):
-            params_map = get_param_map(keyword, required_keys=["NSET"])
+            params_map = get_param_map(keyword, required_keys=["NSET", "NAME"])
             setids = read_set(f, params_map)
-            name = params_map["NSET"]
+            name = params_map["NAME"]
             if name not in nsets:
                 nsets[name] = []
             nsets[name].append(setids)
         elif keyword.startswith("ESET"):
-            params_map = get_param_map(keyword, required_keys=["ESET"])
+            params_map = get_param_map(keyword, required_keys=["ESET", "NAME"])
             setids = read_set(f, params_map)
-            name = params_map["ESET"]
+            name = params_map["NAME"]
             if name not in elsets:
                 elsets[name] = []
             elsets[name].append(setids)
@@ -107,8 +117,29 @@ def read_buffer(f):
             pass
 
     return Mesh(
-        points, cells, point_data=point_data, cell_data=cell_data, field_data=field_data
+        points, cells, point_data=point_data, cell_data=cell_data, field_data=field_data, point_sets=nsets, cell_sets=elsets
     )
+
+
+def _strip_comments(line):
+    if line.strip().startswith("!"):
+        line = ""
+    elif "!" in line:
+        line = line.split("!")[0]
+    return line
+
+
+def _strip_spaces(line):
+    line = line.strip()
+    while "  " in line:
+        line = line.replace("  ", " ")
+    if "=" in line:
+        line = line.replace(" =", "=").replace("= ", "=")
+    return line
+
+
+def _strip_all(line):
+    return _strip_spaces(_strip_comments(line))
 
 
 def _read_nodes(f):
@@ -118,11 +149,15 @@ def _read_nodes(f):
     while True:
         last_pos = f.tell()
         line = f.readline()
-        if line.startswith("!"):
+        if not line:
+            # EOF
             break
-        if line.startswith("$"):
+        line = _strip_all(line)
+        if line == "":
+            continue
+        elif line.startswith("$"):
             break
-        entries = line.strip().split(" ")
+        entries = line.split(" ")
         gid, x = entries[0], entries[1:]
         point_gids[int(gid)] = index
         points.append([float(xx) for xx in x])
@@ -133,11 +168,10 @@ def _read_nodes(f):
 
 
 def _read_cells(f, line0, point_gids):
-    sline = line0.split(" ")[1:]
-    etype_sline = sline[0]
-    if "TYPE" not in etype_sline:
-        raise ReadError(etype_sline)
-    etype = etype_sline.split("=")[1].strip()
+    params_map = get_param_map(_strip_all(line0), ["ELEMENT", "TYPE"])
+    if params_map["TYPE"] is None:
+        raise ReadError(line0)
+    etype = params_map["TYPE"]
     if etype not in permas_to_meshio_type:
         raise ReadError(f"Element type not available: {etype}")
     cell_type = permas_to_meshio_type[etype]
@@ -145,14 +179,18 @@ def _read_cells(f, line0, point_gids):
     while True:
         last_pos = f.tell()
         line = f.readline()
-        if line.startswith("$") or line == "":
+        if not line:
+            # EOF
             break
-        line = line.strip()
+        line = _strip_all(line)
+        if line == "":
+            continue
+        elif line.startswith("$"):
+            break
         # the first item is just a running index
         idx += [point_gids[int(k)] for k in filter(None, line.split(" ")[1:])]
-        if not line.endswith("!"):
-            cells.append(idx)
-            idx = []
+        cells.append(idx)
+        idx = []
     f.seek(last_pos)
     return cell_type, np.array(cells)
 
@@ -163,18 +201,18 @@ def get_param_map(word, required_keys=None):
 
     Example
     -------
-    >>> iline = 0
-    >>> word = 'elset,instance=dummy2,generate'
-    >>> params = get_param_map(iline, word, required_keys=['instance'])
+    >>> word = 'ESET NAME=DUMMY RULE=RANGE'
+    >>> params = get_param_map(word, required_keys=['NAME'])
     params = {
-        'elset' : None,
-        'instance' : 'dummy2,
-        'generate' : None,
+        'ESET' : None,
+        'NAME' : 'DUMMY',
+        'RULE' : 'RANGE',
     }
     """
     if required_keys is None:
         required_keys = []
-    words = word.split(",")
+    word = _strip_all(word)
+    words = word.split(" ")
     param_map = {}
     for wordi in words:
         if "=" not in wordi:
@@ -184,8 +222,8 @@ def get_param_map(word, required_keys=None):
             sword = wordi.split("=")
             if len(sword) != 2:
                 raise ReadError(sword)
-            key = sword[0].strip()
-            value = sword[1].strip()
+            key = sword[0].strip().upper()
+            value = sword[1].strip().strip("'").strip('"').upper()
         param_map[key] = value
 
     msg = ""
@@ -204,19 +242,40 @@ def read_set(f, params_map):
         line = f.readline()
         if line.startswith("$"):
             break
-        set_ids += [int(k) for k in line.strip().strip(" ").split(" ")]
+        if "RULE" not in params_map or params_map["RULE"] == "ITEM":
+            set_ids += [int(k) for k in line.strip().strip(" ").split(" ")]
+        elif params_map["RULE"] == "RANGE":
+            for bounds in line.strip().strip(" ").split(":"):
+                set_ids.append([int(b) for b in bounds.split(" ")])
+        else:
+            raise NotImplementedError(f"{params_map.keys()[0]:s} RULE = {params_map['RULE']:s} not implemented!")
     f.seek(last_pos)
 
-    if "generate" in params_map:
-        if len(set_ids) != 3:
-            raise ReadError(set_ids)
-        set_ids = np.arange(set_ids[0], set_ids[1], set_ids[2])
-    else:
-        try:
-            set_ids = np.unique(np.array(set_ids, dtype="int32"))
-        except ValueError:
-            raise
+    if "RULE" in params_map and params_map["RULE"] == "RANGE":
+        bound_ids = np.array(dtype="int32")
+        for bounds in set_ids:
+            if len(bounds) != 2:
+                raise ReadError(str(bounds))
+            set_ids += list(range(bounds[0], bounds[1] + 1))
+
+    try:
+        set_ids = np.unique(np.array(set_ids, dtype="int32"))
+    except ValueError:
+        raise
     return set_ids
+
+
+def _set_name(name):
+    if ' ' in name:
+        return "'" + name + "'"
+    else:
+        return name
+
+
+def _rows_of_ids(ids, num_per_line = 8):
+    idlen = len(ids)
+    for i in range(0, len(ids), num_per_line):
+        yield " ".join([f"{i:n}" for id in ids[i:min(i+num_per_line,idlen)]])
 
 
 def write(filename, mesh):
@@ -246,32 +305,11 @@ def write(filename, mesh):
             node_idcs = cell_block.data
             f.write("!\n")
             f.write("$ELEMENT TYPE=" + meshio_to_permas_type[cell_block.type] + "\n")
-            if cell_block.type == "tetra10":
+            if cell_block.type in element_node_order.keys():
                 for row in node_idcs:
                     eid += 1
                     mylist = row.tolist()
-                    mylist = [mylist[i] for i in tet10_order]
-                    nids_strs = (str(nid + 1) for nid in mylist)
-                    f.write(str(eid) + " " + " ".join(nids_strs) + "\n")
-            elif cell_block.type == "triangle6":
-                for row in node_idcs:
-                    eid += 1
-                    mylist = row.tolist()
-                    mylist = [mylist[i] for i in tria6_order]
-                    nids_strs = (str(nid + 1) for nid in mylist)
-                    f.write(str(eid) + " " + " ".join(nids_strs) + "\n")
-            elif cell_block.type == "quad9":
-                for row in node_idcs:
-                    eid += 1
-                    mylist = row.tolist()
-                    mylist = [mylist[i] for i in quad9_order]
-                    nids_strs = (str(nid + 1) for nid in mylist)
-                    f.write(str(eid) + " " + " ".join(nids_strs) + "\n")
-            elif cell_block.type == "wedge15":
-                for row in node_idcs:
-                    eid += 1
-                    mylist = row.tolist()
-                    mylist = [mylist[i] for i in wedge15_order]
+                    mylist = [mylist[i] for i in element_node_order[cell_block.type]]
                     nids_strs = (str(nid + 1) for nid in mylist)
                     f.write(str(eid) + " " + " ".join(nids_strs) + "\n")
             else:
@@ -279,6 +317,22 @@ def write(filename, mesh):
                     eid += 1
                     nids_strs = (str(nid + 1) for nid in row.tolist())
                     f.write(str(eid) + " " + " ".join(nids_strs) + "\n")
+        for nset, nids in mesh.point_sets.items():
+            f.write("$NSET NAME='" + _set_name(nset) + '\n')
+            for row in _rows_of_ids(nids, 8):
+                f.write(row + "\n")
+        for eset, sets in mesh.cell_sets.items():
+            if type(sets) is list:
+                f.write("$ESET NAME='" + _set_name(eset) + '\n')
+                for row in _rows_of_ids(sets, 8):
+                    f.write(row + '\n')
+            elif type(sets) is dict:
+                f.write("$ESET NAME='" + _set_name(eset) + '\n')
+                for etype, eids in sets.items():
+                    for row in _rows_of_ids(eids, 8):
+                        f.write(row + '\n')
+            else:
+                pass
         f.write("$END STRUCTURE\n")
         f.write("$EXIT COMPONENT\n")
         f.write("$FIN\n")
