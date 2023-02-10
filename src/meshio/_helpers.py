@@ -101,10 +101,16 @@ def _read_file(path: Path, file_format: str | None):
 
         try:
             return reader_map[file_format](str(path))
-        except ReadError:
-            pass
+        except ReadError as e:
+            print(e)
 
-    error(f"Couldn't read file {path} as either of {', '.join(possible_file_formats)}")
+    if len(possible_file_formats) == 1:
+        msg = f"Couldn't read file {path} as {possible_file_formats[0]}"
+    else:
+        lst = ", ".join(possible_file_formats)
+        msg = f"Couldn't read file {path} as either of {lst}"
+
+    error(msg)
     sys.exit(1)
 
 
@@ -170,7 +176,8 @@ def write(filename, mesh: Mesh, file_format: str | None = None, **kwargs):
         if key in num_nodes_per_cell:
             if value.shape[1] != num_nodes_per_cell[key]:
                 raise WriteError(
-                    f"Unexpected cells array shape {value.shape} for {key} cells."
+                    f"Unexpected cells array shape {value.shape} for {key} cells. "
+                    + f"Expected shape [:, {num_nodes_per_cell[key]}]."
                 )
         else:
             # we allow custom keys <https://github.com/nschloe/meshio/issues/501> and
