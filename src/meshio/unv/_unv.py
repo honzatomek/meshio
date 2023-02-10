@@ -1,5 +1,5 @@
 """
-I/O for PERMAS dat files.
+I/O for IDEAS *.unv files.
 """
 import numpy as np
 import io
@@ -696,11 +696,11 @@ def write(filename, mesh):
 
 
 register_format(
-    "permas", [".post", ".post.gz", ".dato", ".dato.gz"], read, {"permas": write}
+    "unv", [".unv", ".unv.gz"], read, {"unv": write}
 )
 
 if __name__ == "__main__":
-    mesh = read("./test2.dat")
+    mesh = read("./res/hex_double.unv")
     print(mesh)
-    write("./test3.dat", mesh)
+    write("./res/test_hex_double.unv", mesh)
 
