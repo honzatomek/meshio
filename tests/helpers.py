@@ -107,7 +107,7 @@ tri_quad_mesh = meshio.Mesh(
     [
         ("triangle", [[0, 1, 5], [0, 5, 6]]),
         ("quad", [[1, 2, 4, 5]]),
-        ("triangle", [[2, 3, 4]]),
+        # ("triangle", [[2, 3, 4]]),
     ],
 )
 

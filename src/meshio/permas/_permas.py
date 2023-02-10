@@ -37,50 +37,56 @@ FMT_INT = '{0:11n}'
 FMT_FLT = '{0:13.5E}'
 
 permas_to_meshio_type = {
-    "PLOT1": "vertex",
-    "PLOTL2": "line",
-    "FLA2": "line",
-    "FLA3": "line3",
-    "PLOTL3": "line3",
-    "BECOS": "line",
-    "BECOC": "line",
-    "BETAC": "line",
-    "BECOP": "line",
-    "BETOP": "line",
-    "BEAM2": "line",
+    "PLOT1":    "vertex",               # DEFAULT
+    "PLOTL2":   "line",
+    "FLA2":     "line",
+    "BECOC":    "line",
+    "BETAC":    "line",
+    "BECOP":    "line",
+    "BETOP":    "line",
+    "BEAM2":    "line",
     "FSCPIPE2": "line",
-    "LOADA4": "quad",
-    "PLOTA4": "quad",
-    "QUAD4": "quad",
-    "QUAD4S": "quad",
-    "QUAMS4": "quad",
-    "SHELL4": "quad",
-    "PLOTA8": "quad8",
-    "LOADA8": "quad8",
-    "QUAMS8": "quad8",
-    "PLOTA9": "quad9",
-    "LOADA9": "quad9",
-    "QUAMS9": "quad9",
-    "PLOTA3": "triangle",
-    "SHELL3": "triangle",
-    "TRIA3": "triangle",
-    "TRIA3K": "triangle",
-    "TRIA3S": "triangle",
-    "TRIMS3": "triangle",
-    "LOADA6": "triangle6",
-    "TRIMS6": "triangle6",
-    "HEXE8": "hexahedron",
-    "HEXFO8": "hexahedron",
-    "HEXE20": "hexahedron20",
-    "HEXE27": "hexahedron27",
-    "TET4": "tetra",
-    "TET10": "tetra10",
-    "PYRA5": "pyramid",
-    "PENTA6": "wedge",
-    "PENTA15": "wedge15",
+    "BECOS":    "line",                 # DEFAULT
+    "FLA3":     "line3",                # DEFAULT
+    "PLOTL3":   "line3",                # DEFAULT
+    "LOADA4":   "quad",
+    "PLOTA4":   "quad",
+    "QUAD4S":   "quad",
+    "QUAMS4":   "quad",
+    "SHELL4":   "quad",
+    "QUAD4":    "quad",                 # DEFAULT
+    "PLOTA8":   "quad8",
+    "LOADA8":   "quad8",
+    "QUAMS8":   "quad8",                # DEFAULT
+    "PLOTA9":   "quad9",
+    "LOADA9":   "quad9",
+    "QUAMS9":   "quad9",                # DEFAULT
+    "PLOTA3":   "triangle",
+    "SHELL3":   "triangle",
+    "TRIA3K":   "triangle",
+    "TRIA3S":   "triangle",
+    "TRIMS3":   "triangle",
+    "TRIA3":    "triangle",             # DEFAULT
+    "LOADA6":   "triangle6",
+    "TRIMS6":   "triangle6",            # DEFAULT
+    "HEXFO8":   "hexahedron",
+    "HEXE8":    "hexahedron",           # DEFAULT
+    "HEXE20":   "hexahedron20",         # DEFAULT
+    "HEXE27":   "hexahedron27",         # DEFAULT
+    "TET4":     "tetra",                # DEFAULT
+    "TET10":    "tetra10",              # DEFAULT
+    "PYRA5":    "pyramid",              # DEFAULT
+    "PENTA6":   "wedge",                # DEFAULT
+    "PENTA15":  "wedge15",              # DEFAULT
 }
 meshio_to_permas_type = {v: k for k, v in permas_to_meshio_type.items()}
 
+meshio_node_order = {
+    'triangle6': [0, 3, 1, 4, 2, 5],
+    'tetra10':   [0, 4, 1, 5, 2, 6, 7, 8, 9, 3],
+    'quad9':     [0, 4, 1, 7, 8, 5, 3, 6, 2],
+    'wedge15':   [0, 6, 1, 7, 2, 8, 9, 10, 11, 3, 12, 4, 13, 5, 14],
+}
 
 
 def read(filename):
@@ -135,7 +141,8 @@ def read_buffer(f):
                 _nsets[name].extend(list(point_gids.keys()))
 
         elif keyword.startswith("$ELEMENT"):
-            key, idx, cell_gids = _read_cells(f, keyword, point_gids)
+            params_map = get_param_map(keyword[1:]) # , required_keys=["NSET"])
+            key, idx, cell_gids = _read_cells(f, keyword, point_gids, params_map)
             if key in _cells.keys():
                 _cells[key]['idx'].extend(idx)
                 _len = _cells[key]['len']
@@ -190,18 +197,6 @@ def read_buffer(f):
     nsets = _process_nsets(_nsets, _nsets_numeric, point_gids)
 
     elsets = _process_elsets(_elsets, _elsets_numeric, cells)
-    # elsets = {}
-    # for eset, ids in _elsets.items():
-    #     elsets.setdefault(eset, [])
-    #     for cellblock in cells:
-    #         # print(f"{cellblock = }")
-    #         # print(f"{ids = }")
-    #         for id in ids:
-    #             if id in cellblock.cell_gids.keys():
-    #                 # print(f"{cellblock.cell_gids = }")
-    #                 elsets[eset].append(cellblock.cell_gids[id])
-
-    # print(f"{elsets = }")
 
     return Mesh(
         points, cells, point_data=point_data, cell_data=cell_data, field_data=field_data,
@@ -380,18 +375,24 @@ def _read_nodes(f, index):
     return points, point_gids, index
 
 
-def _read_cells(f, line0, point_gids):
-    sline = line0.split(" ")[1:]
-    etype_sline = sline[0]
-    if "TYPE" not in etype_sline:
-        raise ReadError(etype_sline)
-    etype = etype_sline.split("=")[1].strip()
+def _read_cells(f, line0, point_gids, params_map):
+    if "TYPE" not in params_map.keys():
+        raise ReadError(line0)
+    etype = params_map["TYPE"]
     if etype not in permas_to_meshio_type:
         raise ReadError(f"Element type not available: {etype}")
     cell_type = permas_to_meshio_type[etype]
     cells, idx = [], []
     cell_gids = {}
     cid = 0
+    meshio_order_rev = None
+    if permas_to_meshio_type[etype] in meshio_node_order.keys():
+        meshio_order = meshio_node_order[permas_to_meshio_type[etype]]
+        # print(f"{meshio_order = }")
+        meshio_order = {i: meshio_order[i] for i in range(len(meshio_order))}
+        meshio_order_rev = {v: k for k, v in meshio_order.items()}
+        meshio_order_rev = [meshio_order_rev[i] for i in sorted(meshio_order_rev.keys())]
+        # print(f"{meshio_order_rev = }")
     while True:
         line, last_pos = _read_line(f)
         if line is None:             # EOF
@@ -404,6 +405,15 @@ def _read_cells(f, line0, point_gids):
         entries = [int(k) for k in filter(None, line.split(" "))]
         cell_gids[entries[0]] = cid
         idx = [point_gids[k] for k in entries[1:]]
+        if meshio_order_rev is not None:
+            # print(f"before: {idx = }")
+            idx = [idx[i] for i in meshio_order_rev]
+            # print(f"after: {idx = }")
+            # meshio_order = {i: meshio_order[i] for i in range(len(meshio_order))}
+            # meshio_order_rev = {v: k for k, v in meshio_order.items()}
+            # meshio_order_rev = [meshio_order_rev[i] for i in sorted(meshio_order_rev.keys())]
+            # idx = [idx[i] for i in meshio_order_rev]
+            # print(f"back: {idx = }")
         cells.append(idx)
         cid += 1
 
@@ -540,11 +550,13 @@ def _write_element(eid: int, nodes: list, maxlinelen: int=80, offset_len: int=6,
 
     if node_gids is not None:
         nodes = [node_gids[node] for node in nodes]
+    else:
+        nodes = [node + 1 for node in nodes]
 
     offset = " " * offset_len
     continuation = ("{0:<" + str(len(fmt_eid.format(1))) + "}").format("&")
     lines = []
-    nids_strs = (fmt_nid.format(nid + 1) for nid in nodes)
+    nids_strs = (fmt_nid.format(nid) for nid in nodes)
     ncount = len(nodes)
     line = offset + fmt_eid.format(eid)
     for i, n in enumerate(nids_strs):
@@ -596,50 +608,57 @@ def write(filename, mesh):
         f.write("    $COOR\n")
         f.write(_write_nodes(points, 6, FMT_INT, FMT_FLT, node_gids))
         eid = 0
-        tria6_order = [0, 3, 1, 4, 2, 5]
-        tet10_order = [0, 4, 1, 5, 2, 6, 7, 8, 9, 3]
-        quad9_order = [0, 4, 1, 7, 8, 5, 3, 6, 2]
-        wedge15_order = [0, 6, 1, 7, 2, 8, 9, 10, 11, 3, 12, 4, 13, 5, 14]
+        # tria6_order = [0, 3, 1, 4, 2, 5]
+        # tet10_order = [0, 4, 1, 5, 2, 6, 7, 8, 9, 3]
+        # quad9_order = [0, 4, 1, 7, 8, 5, 3, 6, 2]
+        # wedge15_order = [0, 6, 1, 7, 2, 8, 9, 10, 11, 3, 12, 4, 13, 5, 14]
         for cell_block in mesh.cells:
             node_idcs = cell_block.data
             cell_gids = cell_block.cell_gids
             element_gids = None if cell_gids is None else {v: k for k, v in cell_gids.items()}
             f.write("!\n")
             f.write("    $ELEMENT TYPE = " + meshio_to_permas_type[cell_block.type] + "\n")
-            if cell_block.type == "tetra10":
-                for i, row in enumerate(node_idcs):
-                    eid += 1
-                    mylist = row.tolist()
-                    mylist = [mylist[i] for i in tet10_order]
-                    f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
-                                           node_gids, element_gids, i))
-            elif cell_block.type == "triangle6":
-                for i, row in enumerate(node_idcs):
-                    eid += 1
-                    mylist = row.tolist()
-                    mylist = [mylist[i] for i in tria6_order]
-                    f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
-                                           node_gids, element_gids, i))
-            elif cell_block.type == "quad9":
-                for i, row in enumerate(node_idcs):
-                    eid += 1
-                    mylist = row.tolist()
-                    mylist = [mylist[i] for i in quad9_order]
-                    f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
-                                           node_gids, element_gids, i))
-            elif cell_block.type == "wedge15":
-                for i, row in enumerate(node_idcs):
-                    eid += 1
-                    mylist = row.tolist()
-                    mylist = [mylist[i] for i in wedge15_order]
-                    f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
-                                           node_gids, element_gids, i))
-            else:
-                for i, row in enumerate(node_idcs):
-                    eid += 1
-                    mylist = row.tolist()
-                    f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
-                                           node_gids, element_gids, i))
+            for i, row in enumerate(node_idcs):
+                eid += 1
+                mylist = row.tolist()
+                if cell_block.type in meshio_node_order.keys():
+                    mylist = [mylist[i] for i in meshio_node_order[cell_block.type]]
+                f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
+                                       node_gids, element_gids, i))
+            # if cell_block.type == "tetra10":
+            #     for i, row in enumerate(node_idcs):
+            #         eid += 1
+            #         mylist = row.tolist()
+            #         mylist = [mylist[i] for i in tet10_order]
+            #         f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
+            #                                node_gids, element_gids, i))
+            # elif cell_block.type == "triangle6":
+            #     for i, row in enumerate(node_idcs):
+            #         eid += 1
+            #         mylist = row.tolist()
+            #         mylist = [mylist[i] for i in tria6_order]
+            #         f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
+            #                                node_gids, element_gids, i))
+            # elif cell_block.type == "quad9":
+            #     for i, row in enumerate(node_idcs):
+            #         eid += 1
+            #         mylist = row.tolist()
+            #         mylist = [mylist[i] for i in quad9_order]
+            #         f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
+            #                                node_gids, element_gids, i))
+            # elif cell_block.type == "wedge15":
+            #     for i, row in enumerate(node_idcs):
+            #         eid += 1
+            #         mylist = row.tolist()
+            #         mylist = [mylist[i] for i in wedge15_order]
+            #         f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
+            #                                node_gids, element_gids, i))
+            # else:
+            #     for i, row in enumerate(node_idcs):
+            #         eid += 1
+            #         mylist = row.tolist()
+            #         f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
+            #                                node_gids, element_gids, i))
         f.write("!\n")
 
         for point_set, points in mesh.point_sets.items():
