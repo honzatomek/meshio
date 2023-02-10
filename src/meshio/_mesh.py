@@ -88,9 +88,11 @@ class CellBlock:
         cell_type: str,
         data: list | np.ndarray,
         tags: list[str] | None = None,
+        cell_gids: dict = None
     ):
         self.type = cell_type
         self.data = data
+        self.cell_gids = cell_gids   # original element IDs
 
         if cell_type.startswith("polyhedron"):
             self.dim = 3
@@ -125,8 +127,10 @@ class Mesh:
         cell_sets: dict[str, list[ArrayLike]] | None = None,
         gmsh_periodic=None,
         info=None,
+        point_gids: dict = None,   # original point ids
     ):
         self.points = np.asarray(points)
+        self.point_gids = point_gids   # point IDs
         if isinstance(cells, dict):
             # Let's not deprecate this for now.
             # warn(

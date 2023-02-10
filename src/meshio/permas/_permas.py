@@ -2,13 +2,39 @@
 I/O for PERMAS dat files.
 """
 import numpy as np
+import io
 
-from ..__about__ import __version__
-from .._common import warn
-from .._exceptions import ReadError
-from .._files import open_file
-from .._helpers import register_format
-from .._mesh import CellBlock, Mesh
+try:
+    from ..__about__ import __version__
+    from .._common import warn
+    from .._exceptions import ReadError
+    from .._files import open_file
+    from .._helpers import register_format
+    from .._mesh import CellBlock, Mesh
+
+except ImportError as e:
+    import os
+    import sys
+
+    _realpath = os.path.realpath
+    _dirname = os.path.dirname
+
+    sys.path.append(_dirname(_dirname(_dirname(_realpath(__file__)))))
+
+    del _realpath
+    del _dirname
+
+    from meshio.__about__ import __version__
+    from meshio._common import warn
+    from meshio._exceptions import ReadError
+    from meshio._files import open_file
+    from meshio._helpers import register_format
+    from meshio._mesh import CellBlock, Mesh
+
+
+DFLT_COMP = 'KOMPO_1'
+FMT_INT = '{0:11n}'
+FMT_FLT = '{0:13.5E}'
 
 permas_to_meshio_type = {
     "PLOT1": "vertex",
@@ -56,6 +82,7 @@ permas_to_meshio_type = {
 meshio_to_permas_type = {v: k for k, v in permas_to_meshio_type.items()}
 
 
+
 def read(filename):
     """Reads a PERMAS dat file."""
     with open_file(filename, "r") as f:
@@ -72,64 +99,285 @@ def read_buffer(f):
     cell_data = {}
     point_data = {}
 
-    while True:
-        line = f.readline()
-        if not line:
-            # EOF
-            break
+    cellcnt = -1
 
-        # Comments
-        if line.startswith("!"):
+    pid = 0
+
+    points = []
+    point_gids = {}
+    _cells = {}
+
+    _nsets = {}
+    _nsets_numeric = {}
+    _elsets = {}
+    _elsets_numeric = {}
+
+    while True:
+        line, last_pos = _read_line(f)
+        if line is None:      # EOF
+            break
+        elif line == "":      # empty or commented lines
             continue
 
-        keyword = line.strip("$").upper()
-        if keyword.startswith("COOR"):
-            points, point_gids = _read_nodes(f)
-        elif keyword.startswith("ELEMENT"):
-            key, idx = _read_cells(f, keyword, point_gids)
-            cells.append(CellBlock(key, idx))
-        elif keyword.startswith("NSET"):
-            params_map = get_param_map(keyword, required_keys=["NSET"])
-            setids = read_set(f, params_map)
-            name = params_map["NSET"]
-            if name not in nsets:
-                nsets[name] = []
-            nsets[name].append(setids)
-        elif keyword.startswith("ESET"):
-            params_map = get_param_map(keyword, required_keys=["ESET"])
-            setids = read_set(f, params_map)
-            name = params_map["ESET"]
-            if name not in elsets:
-                elsets[name] = []
-            elsets[name].append(setids)
+        # keyword = line.strip("$").upper()
+        keyword = line.upper()
+        if keyword.startswith("$COOR"):
+            params_map = get_param_map(keyword[1:]) # , required_keys=["NSET"])
+            _points, _point_gids, pid = _read_nodes(f, pid)
+            points.extend(_points)
+            point_gids.update(_point_gids)
+
+            if "NSET" in params_map.keys():
+                name = params_map["NSET"]
+                if name not in _nsets:
+                    _nsets[name] = []
+                    _nsets_numeric[name] = True
+                _nsets[name].extend(list(point_gids.keys()))
+
+        elif keyword.startswith("$ELEMENT"):
+            key, idx, cell_gids = _read_cells(f, keyword, point_gids)
+            if key in _cells.keys():
+                _cells[key]['idx'].extend(idx)
+                _len = _cells[key]['len']
+                for eid in cell_gids.keys():
+                    cell_gids[eid] += _len
+                _cells[key]['cell_gids'].update(cell_gids)
+                _cells[key]['len'] += len(cell_gids)
+            else:
+                _cells[key] = {'idx': idx,
+                               'cell_gids': cell_gids,
+                               'len': len(cell_gids)}
+
+            # cells.append(CellBlock(key, idx, cidx=cell_gids))
+            params_map = get_param_map(keyword[1:]) # , required_keys=["ESET"])
+            if "ESET" in params_map.keys():
+                name = params_map["ESET"]
+                if name not in _elsets:
+                    _elsets[name] = []
+                    _elsets_numeric[name] = True
+                _elsets[name].extend(list(cell_gids.keys()))
+
+        elif keyword.startswith("$NSET"):
+            params_map = get_param_map(keyword[1:], required_keys=["NAME"])
+            setids, is_numeric = _read_set(f, params_map)
+            name = params_map["NAME"]
+            if name not in _nsets:
+                _nsets[name] = []
+                _nsets_numeric[name] = is_numeric
+            _nsets[name].extend(setids)
+            if not is_numeric:
+                _nsets_numeric[name] = False
+
+        elif keyword.startswith("$ESET"):
+            params_map = get_param_map(keyword[1:], required_keys=["NAME"])
+            setids, is_numeric = _read_set(f, params_map)
+            name = params_map["NAME"]
+            if name not in _elsets:
+                _elsets[name] = []
+                _elsets_numeric[name] = is_numeric
+            _elsets[name].extend(setids)
+            if not is_numeric:
+                _elsets_numeric[name] = False
+
         else:
             # There are just too many PERMAS keywords to explicitly skip them.
             pass
 
+    for key in _cells.keys():
+        cells.append(CellBlock(key, np.array(_cells[key]['idx']),
+                               cell_gids=_cells[key]['cell_gids']))
+
+    nsets = _process_nsets(_nsets, _nsets_numeric, point_gids)
+
+    elsets = _process_elsets(_elsets, _elsets_numeric, cells)
+    # elsets = {}
+    # for eset, ids in _elsets.items():
+    #     elsets.setdefault(eset, [])
+    #     for cellblock in cells:
+    #         # print(f"{cellblock = }")
+    #         # print(f"{ids = }")
+    #         for id in ids:
+    #             if id in cellblock.cell_gids.keys():
+    #                 # print(f"{cellblock.cell_gids = }")
+    #                 elsets[eset].append(cellblock.cell_gids[id])
+
+    # print(f"{elsets = }")
+
     return Mesh(
-        points, cells, point_data=point_data, cell_data=cell_data, field_data=field_data
+        points, cells, point_data=point_data, cell_data=cell_data, field_data=field_data,
+        point_sets=nsets, cell_sets=elsets, point_gids=point_gids
     )
 
 
-def _read_nodes(f):
+def _set_name_to_id(setname, set, sets):
+    _set = []
+    is_numeric = True
+    for nid in set:
+        if type(nid) is int:
+            _set.append(nid)
+        elif nid.isnumeric():
+            _set.append(int(nid))
+        else:
+            if nid in sets.keys():
+                for iid in sets[nid]:
+                    if type(iid) is int:
+                        _set.append(iid)
+                    elif type(iid) is str:
+                        if iid.isnumeric():
+                            _set.append(int(iid))
+                        else:
+                            _set.append(iid)
+                            is_numeric = False
+            else:
+                raise ReadError(f"Node Set {nid} not found in file")
+    return _set, is_numeric
+
+
+def _process_nsets(nsets, nsets_numeric, point_gids):
+    # replace set names by their contents
+    while not all(nsets_numeric.values()):
+        for nset in nsets.keys():
+            if not nsets_numeric[nset]:
+                nsets[nset], nsets_numeric[nset] = _set_name_to_id(nset, nsets[nset], nsets)
+
+    # replace original ids by meshio ids
+    msg = ""
+    for nset in nsets.keys():
+        nsets[nset] = list(set(nsets[nset]))
+        swapped = [False] * len(nsets[nset])
+        for i, nid in enumerate(nsets[nset]):
+            nsets[nset][i] = point_gids[nid]
+            swapped[i] = True
+        if not all(swapped):
+            msg += f"NSET NAME = {nset:s} IDs not found:\n"
+            msg += ", ".join([nsets[nset][i] for i in range(len(nsets[nset])) if not swapped[i]]) + "\n"
+
+    if msg != "":
+        raise ReadError(msg)
+
+    return nsets
+
+def _process_elsets(elsets, elsets_numeric, cells):
+    # replace set names by their contents
+    while not all(elsets_numeric.values()):
+        for elset in elsets.keys():
+            if not elsets_numeric[nset]:
+                elsets[elset], elsets_numeric[elset] = _set_name_to_id(elset, elsets[elset], elsets)
+
+    # replace original ids by meshio ids
+    msg = ""
+    for elset in elsets.keys():
+        elsets[elset] = list(set(elsets[elset]))
+        swapped = [False] * len(elsets[elset])
+        offset = 0
+        for cell_block in cells:
+            for i, eid in enumerate(elsets[elset]):
+                if eid in cell_block.cell_gids.keys():
+                    elsets[elset][i] = cell_block.cell_gids[eid] + offset
+                    swapped[i] = True
+            offset += len(cell_block.data)
+        if not all(swapped):
+            msg += f"ESET NAME = {elset:s} IDs not found:\n"
+            msg += ", ".join([elsets[elset][i] for i in range(len(elsets[elset])) if not swapped[i]]) + "\n"
+
+    if msg != "":
+        raise ReadError(msg)
+
+    return elsets
+
+
+def _read_line(f: io.TextIOWrapper) -> (str, int):
+    """
+    Line reader in case of continuation lines in PERMAS
+
+    Example
+    -------
+    >>> file = '! testing component
+
+                $ENTER COMPONENT
+                  ! & NAME = KOMPO_2
+                  & NAME = KOMPO_1  ! correct name
+
+                  & DOFTYPE = DISP
+                  $STRUCTURE'
+    >>> line, last_pos =_read_line(file)
+    line = ""
+    last_pos = 0
+    >>> line, last_pos =_read_line(file)
+    line = ""
+    last_pos = 1
+    >>> line, last_pos =_read_line(file)
+    line = '$ENTER COMPONENT NAME = KOMPO_1 DOFTYPE = DISP'
+    last_pos = 2
+    >>> line, last_pos =_read_line(file)
+    line = '$STRUCTURE'
+    last_pos = 7
+    """
+    last_pos = f.tell()                       # previous line in file
+    line = f.readline()                       # read current line
+    if not line:                              # EOF
+        return None, last_pos                 # return None, previous position
+    line = _strip_line(line)                  # strip witespaces and comments
+    if line == "":                            # in case of empty or commented line
+        return line, last_pos
+    while True:                               # cycle through next lines
+        last_pos1 = f.tell()                  # last position in file
+        line1 = f.readline()                  # read next line
+        if not line1:                         # next line is EOF
+            f.seek(last_pos1)                 # revert back
+            break
+        line1 = _strip_line(line1)            # strip whitespaces and comments
+        if line1.startswith("&"):             # line is continuation
+            last_pos = last_pos1              # update last position
+            line += " " + line1[1:].strip()   # concatenate lines
+        elif line1 == "":                     # next line is empty or commented
+            last_pos = last_pos1              # update last position
+        else:                                 # next line is normal
+            f.seek(last_pos1)                 # revert back
+            break
+
+    line = _strip_line(line)                  # one more strip in case of commented or empty
+                                              # lines in the middle of continuation block
+    return line, last_pos
+
+
+def _strip_line(line: str) -> str:
+    """
+    Strips line of whitespaces and comments, if whole line is commented returns
+    empty string.
+    """
+    line = line.strip()                       # strip whitespace characters
+    while "  " in line:                       # replace multiple spaces with single ones
+        line = line.replace("  ", " ")
+    if line.startswith("!") or line == " ":   # discard commented line or empty line
+        line = ""
+    if "!" in line:                           # discard comment at EOL
+        line = line.split("!")[0].strip(" ")
+    return line
+
+
+def _read_nodes(f, index):
     points = []
     point_gids = {}
-    index = 0
+    # index = 0
     while True:
-        last_pos = f.tell()
-        line = f.readline()
-        if line.startswith("!"):
+        line, last_pos = _read_line(f)
+        if line is None:             # EOF
             break
-        if line.startswith("$"):
+        elif line == "":             # empty or commented line
+            continue
+        elif line.startswith("$"):   # next keyword
             break
-        entries = line.strip().split(" ")
+
+        entries = line.split(" ")
         gid, x = entries[0], entries[1:]
         point_gids[int(gid)] = index
         points.append([float(xx) for xx in x])
         index += 1
 
     f.seek(last_pos)
-    return np.array(points, dtype=float), point_gids
+    # return np.array(points, dtype=float), point_gids, index
+    return points, point_gids, index
 
 
 def _read_cells(f, line0, point_gids):
@@ -142,19 +390,73 @@ def _read_cells(f, line0, point_gids):
         raise ReadError(f"Element type not available: {etype}")
     cell_type = permas_to_meshio_type[etype]
     cells, idx = [], []
+    cell_gids = {}
+    cid = 0
+    while True:
+        line, last_pos = _read_line(f)
+        if line is None:             # EOF
+            break
+        elif line == "":             # empty or commented line
+            continue
+        elif line.startswith("$"):   # next keyword
+            break
+
+        entries = [int(k) for k in filter(None, line.split(" "))]
+        cell_gids[entries[0]] = cid
+        idx = [point_gids[k] for k in entries[1:]]
+        cells.append(idx)
+        cid += 1
+
+    f.seek(last_pos)
+    # return cell_type, np.array(cells), cell_gids
+    return cell_type, cells, cell_gids
+
+
+def _read_set(f, params_map):
+    set_ids = []
+    # TODO:
+    # setids can be also set names
+    is_numeric = True
     while True:
         last_pos = f.tell()
         line = f.readline()
-        if line.startswith("$") or line == "":
+        line = _strip_line(line)
+        if line is None:             # EOF
             break
-        line = line.strip()
-        # the first item is just a running index
-        idx += [point_gids[int(k)] for k in filter(None, line.split(" ")[1:])]
-        if not line.endswith("!"):
-            cells.append(idx)
-            idx = []
+        elif line == "":             # empty or commented line
+            continue
+        elif line.startswith("$"):   # next keyword
+            break
+        # cannot convert to int in case of set names included
+        for k in line.split(" "):
+            if k.isnumeric():
+                set_ids.append(int(k))
+            else:
+                is_numeric = False
+                set_ids.append(k)
+
+        # set_ids += [k for k in line.split(" ")]
     f.seek(last_pos)
-    return cell_type, np.array(cells)
+
+    # TODO:
+    # RULE = [ITEM/ALL/BOOLEAN/RANGE]
+    if "RULE" in params_map and params_map["RULE"] != "ITEM":
+        raise NotImplementedError("Reading other types of ses apart from RULE = ITEM " +
+                                  f"is not implemented (RULE = {params_map['RULE']}).")
+    # if "generate" in params_map:
+    #     if len(set_ids) != 3:
+    #         raise ReadError(set_ids)
+    #     set_ids = np.arange(set_ids[0], set_ids[1], set_ids[2])
+    # else:
+    #     try:
+    #         set_ids = np.unique(np.array(set_ids, dtype="int32"))
+    #     except ValueError:
+    #         raise
+    # try:
+    #     set_ids = np.unique(np.array(set_ids, dtype="int32"))
+    # except ValueError:
+    #     raise
+    return set_ids, is_numeric
 
 
 def get_param_map(word, required_keys=None):
@@ -164,59 +466,114 @@ def get_param_map(word, required_keys=None):
     Example
     -------
     >>> iline = 0
-    >>> word = 'elset,instance=dummy2,generate'
+    >>> word = '$NSET NAME = OF_ALLE'
     >>> params = get_param_map(iline, word, required_keys=['instance'])
     params = {
-        'elset' : None,
-        'instance' : 'dummy2,
-        'generate' : None,
+        'NSET' : None,
+        'NAME' : 'OF_ALLE',
+    }
+    >>> word = '$ENTER COMPONENT NAME = KOMPO_1 DOFTYPE = DISP PRES TEMP MATH'
+    >>> params = get_param_map(iline, word)
+    params = {
+        'ENTER' : None,
+        'COMPONENT' : None,
+        'NAME' : 'KOMPO_1',
+        'DOFTYPE': ['DISP', 'PRES', 'TEMP', 'MATH']
     }
     """
+    word = word.lstrip("$").upper().strip() # strip whitespaces and ledt $
+    word = word.replace("=", " = ")         # create spaces around =
+    while "  " in word:                     # replace double spaces with single one
+        word = word.replace("  ", " ")
+    word = word.replace(" =", "=")          # delete space before =
+
+    sword = word.split(" ")                 # split using spaces
+
+    i = 0
+    param_map = {}
+    key = ""
+    while i < len(sword):
+        if sword[i].endswith("="):
+            key = sword[i][:-1]
+            param_map.setdefault(key, [])
+        elif key == "":
+            param_map[sword[i]] = []
+        else:
+            param_map[key].append(sword[i])
+        i += 1
+    # raise ReadError(sword)
+
+    for key, values in param_map.items():
+        if len(values) == 0:
+            param_map[key] = None
+        elif len(values) == 1:
+            param_map[key] = values[0]
+
     if required_keys is None:
         required_keys = []
-    words = word.split(",")
-    param_map = {}
-    for wordi in words:
-        if "=" not in wordi:
-            key = wordi.strip()
-            value = None
-        else:
-            sword = wordi.split("=")
-            if len(sword) != 2:
-                raise ReadError(sword)
-            key = sword[0].strip()
-            value = sword[1].strip()
-        param_map[key] = value
-
     msg = ""
     for key in required_keys:
         if key not in param_map:
             msg += f"{key} not found in {word}\n"
     if msg:
         raise RuntimeError(msg)
+
     return param_map
 
 
-def read_set(f, params_map):
-    set_ids = []
-    while True:
-        last_pos = f.tell()
-        line = f.readline()
-        if line.startswith("$"):
-            break
-        set_ids += [int(k) for k in line.strip().strip(" ").split(" ")]
-    f.seek(last_pos)
+def _write_nodes(points: list, offset_len: int=6,
+                 fmt_nid: str=FMT_INT, fmt_coor=FMT_FLT, node_gids: dict=None) -> str:
+    offset = " " * offset_len
+    lines = []
+    for id, coors in enumerate(points):
+        nid = id + 1 if node_gids is None else node_gids[id]
+        lines.append(offset + fmt_nid.format(nid) + "".join([fmt_coor.format(x) for x in coors]))
+    return "\n".join(lines) + "\n"
 
-    if "generate" in params_map:
-        if len(set_ids) != 3:
-            raise ReadError(set_ids)
-        set_ids = np.arange(set_ids[0], set_ids[1], set_ids[2])
+
+def _write_element(eid: int, nodes: list, maxlinelen: int=80, offset_len: int=6,
+                   fmt_eid: str=FMT_INT, fmt_nid: str=FMT_INT,
+                   node_gids: list=None, element_gids: list=None, row: int=None) -> str:
+
+    if element_gids is not None:
+        eid = element_gids[row]
+
+    if node_gids is not None:
+        nodes = [node_gids[node] for node in nodes]
+
+    offset = " " * offset_len
+    continuation = ("{0:<" + str(len(fmt_eid.format(1))) + "}").format("&")
+    lines = []
+    nids_strs = (fmt_nid.format(nid + 1) for nid in nodes)
+    ncount = len(nodes)
+    line = offset + fmt_eid.format(eid)
+    for i, n in enumerate(nids_strs):
+        line += n
+        if len(line) + len(n) > maxlinelen or i == ncount - 1:
+            lines.append(line)
+            line = offset + continuation
+
+    return "\n".join(lines) + "\n"
+
+
+def _write_set(nodes: list, maxlinelen: int=80, offset_len: int=6,
+               fmt_nid: str=FMT_INT, node_gids: list=None, id_offset=1) -> str:
+    lines = []
+    ncount = len(nodes)
+    if node_gids is not None:
+        nodes = [node_gids[node] for node in nodes]
     else:
-        try:
-            set_ids = np.unique(np.array(set_ids, dtype="int32"))
-        except ValueError:
-            raise
-    return set_ids
+        nodes = [node + id_offset for node in nodes]
+    offset = " " * offset_len
+    nids_strs = (fmt_nid.format(nid) for nid in nodes)
+    line = offset
+    for i, n in enumerate(nids_strs):
+        line += n
+        if len(line) + len(n) > maxlinelen or i == ncount - 1:
+            lines.append(line)
+            line = offset
+
+    return "\n".join(lines) + "\n"
 
 
 def write(filename, mesh):
@@ -230,13 +587,14 @@ def write(filename, mesh):
         points = mesh.points
 
     with open_file(filename, "wt") as f:
-        f.write("!PERMAS DataFile Version 18.0\n")
-        f.write(f"!written by meshio v{__version__}\n")
-        f.write("$ENTER COMPONENT NAME=DFLT_COMP\n")
-        f.write("$STRUCTURE\n")
-        f.write("$COOR\n")
-        for k, x in enumerate(points):
-            f.write(f"{k + 1} {x[0]} {x[1]} {x[2]}\n")
+        node_gids = None if mesh.point_gids is None else {v: k for k, v in mesh.point_gids.items()}
+        point_gids = mesh.point_gids
+        f.write("! PERMAS DataFile Version 18.0\n")
+        f.write(f"! written by meshio v{__version__}\n")
+        f.write(f"$ENTER COMPONENT NAME = {DFLT_COMP:s}\n")
+        f.write("  $STRUCTURE\n")
+        f.write("    $COOR\n")
+        f.write(_write_nodes(points, 6, FMT_INT, FMT_FLT, node_gids))
         eid = 0
         tria6_order = [0, 3, 1, 4, 2, 5]
         tet10_order = [0, 4, 1, 5, 2, 6, 7, 8, 9, 3]
@@ -244,42 +602,73 @@ def write(filename, mesh):
         wedge15_order = [0, 6, 1, 7, 2, 8, 9, 10, 11, 3, 12, 4, 13, 5, 14]
         for cell_block in mesh.cells:
             node_idcs = cell_block.data
+            cell_gids = cell_block.cell_gids
+            element_gids = None if cell_gids is None else {v: k for k, v in cell_gids.items()}
             f.write("!\n")
-            f.write("$ELEMENT TYPE=" + meshio_to_permas_type[cell_block.type] + "\n")
+            f.write("    $ELEMENT TYPE = " + meshio_to_permas_type[cell_block.type] + "\n")
             if cell_block.type == "tetra10":
-                for row in node_idcs:
+                for i, row in enumerate(node_idcs):
                     eid += 1
                     mylist = row.tolist()
                     mylist = [mylist[i] for i in tet10_order]
-                    nids_strs = (str(nid + 1) for nid in mylist)
-                    f.write(str(eid) + " " + " ".join(nids_strs) + "\n")
+                    f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
+                                           node_gids, element_gids, i))
             elif cell_block.type == "triangle6":
-                for row in node_idcs:
+                for i, row in enumerate(node_idcs):
                     eid += 1
                     mylist = row.tolist()
                     mylist = [mylist[i] for i in tria6_order]
-                    nids_strs = (str(nid + 1) for nid in mylist)
-                    f.write(str(eid) + " " + " ".join(nids_strs) + "\n")
+                    f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
+                                           node_gids, element_gids, i))
             elif cell_block.type == "quad9":
-                for row in node_idcs:
+                for i, row in enumerate(node_idcs):
                     eid += 1
                     mylist = row.tolist()
                     mylist = [mylist[i] for i in quad9_order]
-                    nids_strs = (str(nid + 1) for nid in mylist)
-                    f.write(str(eid) + " " + " ".join(nids_strs) + "\n")
+                    f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
+                                           node_gids, element_gids, i))
             elif cell_block.type == "wedge15":
-                for row in node_idcs:
+                for i, row in enumerate(node_idcs):
                     eid += 1
                     mylist = row.tolist()
                     mylist = [mylist[i] for i in wedge15_order]
-                    nids_strs = (str(nid + 1) for nid in mylist)
-                    f.write(str(eid) + " " + " ".join(nids_strs) + "\n")
+                    f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
+                                           node_gids, element_gids, i))
             else:
-                for row in node_idcs:
+                for i, row in enumerate(node_idcs):
                     eid += 1
-                    nids_strs = (str(nid + 1) for nid in row.tolist())
-                    f.write(str(eid) + " " + " ".join(nids_strs) + "\n")
-        f.write("$END STRUCTURE\n")
+                    mylist = row.tolist()
+                    f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
+                                           node_gids, element_gids, i))
+        f.write("!\n")
+
+        for point_set, points in mesh.point_sets.items():
+            f.write(f"  $NSET NAME = {point_set:s}\n")
+            f.write(_write_set(points, 80, 6, FMT_INT, node_gids))
+            f.write("!\n")
+
+        for cell_set, cellids in mesh.cell_sets.items():
+            eset = []
+            f.write(f"  $ESET NAME = {cell_set:s}\n")
+            if element_gids is None:
+                f.write(_write_set(points, 80, 6, FMT_INT, cellids))
+            else:
+                offset = 0
+                for cell_block in mesh.cells:
+                    cell_gids = cell_block.cell_gids
+                    if cell_gids is None:
+                        cell_gids = {i + offset: i for i in range(len(cell_block.data))}
+                    else:
+                        element_gids = {v + offset: k for k, v in cell_gids.items()}
+                    for cellid in cellids:
+                        if cellid in element_gids.keys():
+                            eset.append(element_gids[cellid])
+                    offset += len(mesh.cells)
+                f.write(_write_set(eset, 80, 6, FMT_INT, None, id_offset=0))
+            f.write("!\n")
+
+        f.write("  $END STRUCTURE\n")
+        f.write("!\n")
         f.write("$EXIT COMPONENT\n")
         f.write("$FIN\n")
 
@@ -287,3 +676,9 @@ def write(filename, mesh):
 register_format(
     "permas", [".post", ".post.gz", ".dato", ".dato.gz"], read, {"permas": write}
 )
+
+if __name__ == "__main__":
+    mesh = read("./test2.dat")
+    print(mesh)
+    write("./test3.dat", mesh)
+
