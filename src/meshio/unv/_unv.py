@@ -83,7 +83,8 @@ unv_to_meshio_node_order = {}
 for etype in meshio_to_unv_node_order.keys():
     unv_to_meshio_node_order[etype] = {i: meshio_to_unv_node_order[etype][i] for i in
                                        range(len(meshio_to_unv_node_order[etype]))}
-    unv_to_meshio_node_order[etype] = {v: k for k, v in unv_to_meshio_node_order[etype].items()}
+    unv_to_meshio_node_order[etype] = {v: k for k, v in
+                                       unv_to_meshio_node_order[etype].items()}
     unv_to_meshio_node_order[etype] = [unv_to_meshio_node_order[etype][i] for i in
                                        sorted(unv_to_meshio_node_order[etype].keys())]
 
@@ -310,7 +311,8 @@ def _read_cells(f):
                 else:
                     err += f"Missing Record 2 for element {cid:n} at position {last_pos + 1:n}.\n"
                 break
-            idx.extend([int(line[j*10:(j+1)*10].strip()) for j in range(numnodes)])
+            for i in range(0, len(line)-1, 10):
+                idx.append(int(line[i:i+10]))
 
         if FEid not in unv_to_meshio_type.keys():
             err += f"Wrong type of element {cid:n} at position {last_pos:n}.\n"
@@ -388,7 +390,6 @@ def _write_dp_nodes(points: np.ndarray, node_gids: dict=None) -> str:
             dataset += f"{node_gids[i]:10n}{defsys:10n}{outsys:10n}{color:10n}\n"
         else:
             dataset += f"{i+1:10n}{defsys:10n}{outsys:10n}{color:10n}\n"
-            nid += 1
         dataset += f"{coor[0]:25.16E}{coor[1]:25.16E}{coor[2]:25.16E}\n".replace("E", "D")
 
     dataset += DELIMITER + "\n"
@@ -414,16 +415,20 @@ def _write_elements(cells: list, node_gids: dict = None) -> str:
             element_gids = {v: k for k, v in cell_gids.items()}
 
         for j, points in enumerate(cell_block.data):
-            eid = cid
-            if element_gids is not None:
-                eid = element_gids[eid]
+            if cell_gids is not None:
+                eid = element_gids[cid]
+            else:
+                eid = cid + 1
             numnodes = len(points)
             dataset += f"{eid:10n}{FEid:10n}{pid:10n}{mid:10n}{color:10n}{numnodes:10n}\n"
 
             if node_gids is not None:
                 nodes = [node_gids[p] for p in points]
             else:
-                nodes = points
+                nodes = [point + 1 for point in points]
+
+            if etype in unv_to_meshio_node_order.keys():
+                nodes = [nodes[i] for i in meshio_to_unv_node_order[etype]]
 
             # beam elements
             if FEid in (21, 22, 24):
@@ -460,9 +465,9 @@ def write(filename, mesh):
         f.write("IDEAS unv file format\n")
         f.write(f"written by meshio v{__version__}\n")
 
-        if points is not None:
+        if points is not None and len(points) > 0:
             f.write(_write_dp_nodes(points, node_gids))
-        if mesh.cells is not None:
+        if mesh.cells is not None and len(mesh.cells) > 0:
             f.write(_write_elements(mesh.cells, node_gids))
 
         # TODO:
