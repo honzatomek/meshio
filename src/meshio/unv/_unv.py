@@ -39,8 +39,8 @@ FMT_FLT = "{0:13.5E}"
 FMT_DBL = "{0:25.16E}"
 
 unv_to_meshio_dataset = {
-    15: "NODESP",
-  2411: "NODEDP",
+    15: "NODE1P",
+  2411: "NODE2P",
   2412: "ELEMENT",
     55: "NODAL DATA"
 }
@@ -73,17 +73,19 @@ unv_to_meshio_type = {
             # 122: "RBE2"}       # Rigid Element                             Quadrilateral Lagrange P1
 meshio_to_unv_type = {v: k for k, v in unv_to_meshio_type.items()}
 
-meshio_node_order = {
+meshio_to_unv_node_order = {
     "triangle6": [0, 3, 1, 4, 2, 5],
     "tetra10":   [0, 4, 1, 5, 2, 6, 7, 8, 9, 3],
     "quad9":     [0, 4, 1, 7, 8, 5, 3, 6, 2],
     "wedge15":   [0, 6, 1, 7, 2, 8, 9, 10, 11, 3, 12, 4, 13, 5, 14],
 }
-unv_node_order = {}
-for etype in meshio_node_order.keys():
-    unv_node_order[etype] = {i: meshio_node_order[etype][i] for i in range(len(meshio_node_order[etype]))}
-    unv_node_order[etype] = {v: k for k, v in unv_node_order[etype].items()}
-    unv_node_order[etype] = [unv_node_order[etype][i] for i in sorted(unv_node_order[etype].keys())]
+unv_to_meshio_node_order = {}
+for etype in meshio_to_unv_node_order.keys():
+    unv_to_meshio_node_order[etype] = {i: meshio_to_unv_node_order[etype][i] for i in
+                                       range(len(meshio_to_unv_node_order[etype]))}
+    unv_to_meshio_node_order[etype] = {v: k for k, v in unv_to_meshio_node_order[etype].items()}
+    unv_to_meshio_node_order[etype] = [unv_to_meshio_node_order[etype][i] for i in
+                                       sorted(unv_to_meshio_node_order[etype].keys())]
 
 
 def read(filename):
@@ -121,12 +123,12 @@ def read_buffer(f):
 
         dataset = int(line.strip())              # dataset number
         if dataset in unv_to_meshio_dataset.keys():  # known dataset number
-            if unv_to_meshio_dataset[dataset] == "NODESP":
+            if unv_to_meshio_dataset[dataset] == "NODE1P":
                 _points, _point_gids = _read_sp_nodes(f)
                 points.extend(_points)
                 point_gids.extend(_point_gids)
 
-            elif unv_to_meshio_dataset[dataset] == "NODEDP":
+            elif unv_to_meshio_dataset[dataset] == "NODE2P":
                 _points, _point_gids = _read_dp_nodes(f)
                 points.extend(_points)
                 point_gids.extend(_point_gids)
@@ -143,6 +145,9 @@ def read_buffer(f):
             # TODO:
             elif unv_to_meshio_dataset[dataset] == "NODAL DATA":
                 _read_dataset(f)
+
+            # TODO:
+            # nsets, elsets
 
         # too many datasets to specifically skip them
         else:
@@ -164,6 +169,7 @@ def read_buffer(f):
                                 for i in range(len(cell_gids[cell_type]))}
 
         cell_count += len(cells[cell_type])
+
     cells = [CellBlock(etype, np.array(cells[etype], dtype=np.int32),
                        cell_gids=cell_gids[etype]) for etype in cells.keys()]
 
@@ -291,8 +297,8 @@ def _read_cells(f):
                 break
             beamdef = [int(line[i*10:(i+1)*10].strip()) for i in range(3)]
 
-        pids = []
-        while len(pids) < numnodes:
+        idx = []
+        while len(idx) < numnodes:
             last_pos = f.tell()
             line = f.readline().strip("\n")
             if not line:
@@ -304,7 +310,7 @@ def _read_cells(f):
                 else:
                     err += f"Missing Record 2 for element {cid:n} at position {last_pos + 1:n}.\n"
                 break
-            pids.extend([int(line[j*10:(j+1)*10].strip()) for j in range(numnodes)])
+            idx.extend([int(line[j*10:(j+1)*10].strip()) for j in range(numnodes)])
 
         if FEid not in unv_to_meshio_type.keys():
             err += f"Wrong type of element {cid:n} at position {last_pos:n}.\n"
@@ -315,10 +321,12 @@ def _read_cells(f):
             cells.setdefault(cell_type, [])
             cell_gids.setdefault(cell_type, [])
 
-        if cell_type in meshio_node_order.keys():
-            cells[cell_type].append([pids[meshio_node_order[etype][i]] for i in range(len(pids))])
-        else:
-            cells[cell_type].append([pids[i] for i in range(len(pids))])
+        # TODO:
+        # check the logic
+        if cell_type in unv_to_meshio_node_order.keys():
+            idx = [idx[i] for i in unv_to_meshio_node_order[etype]]
+
+        cells[cell_type].append(idx)
         cell_gids[cell_type].append(cid)
 
     if err != "":
@@ -328,6 +336,9 @@ def _read_cells(f):
 
 
 def _read_dataset(f):
+    """
+    Dummy function to skip unknown datasets
+    """
     err = ""
     while True:
         last_pos = f.tell()
@@ -344,67 +355,99 @@ def _read_dataset(f):
     return
 
 
-def _write_nodes(points: list, offset_len: int=6,
-                 fmt_nid: str=FMT_INT, fmt_coor=FMT_FLT, node_gids: dict=None) -> str:
-    offset = " " * offset_len
-    lines = []
-    for id, coors in enumerate(points):
-        nid = id + 1 if node_gids is None else node_gids[id]
-        lines.append(offset + fmt_nid.format(nid) + "".join([fmt_coor.format(x) for x in coors]))
-    return "\n".join(lines) + "\n"
+def _write_sp_nodes(points: np.ndarray, node_gids: dict=None) -> str:
+    defsys = 1
+    outsys = 1
+    color = 1
+
+    dataset = DELIMITER + "\n"
+    dataset += FMT_DTS.format(meshio_to_unv_dataset["NODE1P"]) + "\n"
+
+    for i, coor in enumerate(points):
+        if node_gids is not None:
+            dataset += f"{node_gids[i]:10n}{defsys:10n}{outsys:10n}{color:10n}"
+        else:
+            dataset += f"{i+1:10n}{defsys:10n}{outsys:10n}{color:10n}"
+        dataset += f"{coor[0]:13.5E}{coor[1]:13.5E}{coor[2]:13.5E}\n"
+
+    dataset = DELIMITER + "\n"
+
+    return dataset
 
 
-def _write_element(eid: int, nodes: list, maxlinelen: int=80, offset_len: int=6,
-                   fmt_eid: str=FMT_INT, fmt_nid: str=FMT_INT,
-                   node_gids: list=None, element_gids: list=None, row: int=None) -> str:
+def _write_dp_nodes(points: np.ndarray, node_gids: dict=None) -> str:
+    defsys = 1
+    outsys = 1
+    color = 1
 
-    if element_gids is not None:
-        eid = element_gids[row]
+    dataset = DELIMITER + "\n"
+    dataset += FMT_DTS.format(meshio_to_unv_dataset["NODE2P"]) + "\n"
 
-    if node_gids is not None:
-        nodes = [node_gids[node] for node in nodes]
-    else:
-        nodes = [node + 1 for node in nodes]
+    for i, coor in enumerate(points):
+        if node_gids is not None:
+            dataset += f"{node_gids[i]:10n}{defsys:10n}{outsys:10n}{color:10n}\n"
+        else:
+            dataset += f"{i+1:10n}{defsys:10n}{outsys:10n}{color:10n}\n"
+            nid += 1
+        dataset += f"{coor[0]:25.16E}{coor[1]:25.16E}{coor[2]:25.16E}\n".replace("E", "D")
 
-    offset = " " * offset_len
-    continuation = ("{0:<" + str(len(fmt_eid.format(1))) + "}").format("&")
-    lines = []
-    nids_strs = (fmt_nid.format(nid) for nid in nodes)
-    ncount = len(nodes)
-    line = offset + fmt_eid.format(eid)
-    for i, n in enumerate(nids_strs):
-        line += n
-        if len(line) + len(n) > maxlinelen or i == ncount - 1:
-            lines.append(line)
-            line = offset + continuation
+    dataset += DELIMITER + "\n"
 
-    return "\n".join(lines) + "\n"
+    return dataset
 
 
-def _write_set(nodes: list, maxlinelen: int=80, offset_len: int=6,
-               fmt_nid: str=FMT_INT, node_gids: list=None, id_offset=1) -> str:
-    lines = []
-    ncount = len(nodes)
-    if node_gids is not None:
-        nodes = [node_gids[node] for node in nodes]
-    else:
-        nodes = [node + id_offset for node in nodes]
-    offset = " " * offset_len
-    nids_strs = (fmt_nid.format(nid) for nid in nodes)
-    line = offset
-    for i, n in enumerate(nids_strs):
-        line += n
-        if len(line) + len(n) > maxlinelen or i == ncount - 1:
-            lines.append(line)
-            line = offset
+def _write_elements(cells: list, node_gids: dict = None) -> str:
+    pid = 1
+    mid = 1
+    color = 1
 
-    return "\n".join(lines) + "\n"
+    dataset = DELIMITER + "\n"
+    dataset += FMT_DTS.format(meshio_to_unv_dataset['ELEMENT']) + "\n"
+
+    cid = 0
+    for i, cell_block in enumerate(cells):
+        cell_gids = cell_block.cell_gids
+        etype = cell_block.type
+        FEid = meshio_to_unv_type[etype]
+
+        if cell_gids is not None:
+            element_gids = {v: k for k, v in cell_gids.items()}
+
+        for j, points in enumerate(cell_block.data):
+            eid = cid
+            if element_gids is not None:
+                eid = element_gids[eid]
+            numnodes = len(points)
+            dataset += f"{eid:10n}{FEid:10n}{pid:10n}{mid:10n}{color:10n}{numnodes:10n}\n"
+
+            if node_gids is not None:
+                nodes = [node_gids[p] for p in points]
+            else:
+                nodes = points
+
+            # beam elements
+            if FEid in (21, 22, 24):
+                #         orientation node,  endA ID, endB ID
+                dataset += f"{0:10n}{0:10n}{0:10n}\n"
+
+            # nodes
+            for i in range(numnodes):
+                dataset += f"{nodes[i]:10n}"
+                if (i + 1) % 8 == 0:
+                    dataset += "\n"
+            if not dataset.endswith("\n"):
+                dataset += "\n"
+            cid += 1
+
+    dataset += DELIMITER + "\n"
+
+    return dataset
 
 
 def write(filename, mesh):
     if mesh.points.shape[1] == 2:
         warn(
-            "PERMAS requires 3D points, but 2D points given. "
+            "IDEAS UNV requires 3D points, but 2D points given. "
             "Appending 0 third component."
         )
         points = np.column_stack([mesh.points, np.zeros_like(mesh.points[:, 0])])
@@ -412,61 +455,20 @@ def write(filename, mesh):
         points = mesh.points
 
     with open_file(filename, "wt") as f:
-        node_gids = None if mesh.point_gids is None else {v: k for k, v in mesh.point_gids.items()}
         point_gids = mesh.point_gids
-        f.write("! PERMAS DataFile Version 18.0\n")
-        f.write(f"! written by meshio v{__version__}\n")
-        f.write(f"$ENTER COMPONENT NAME = {DFLT_COMP:s}\n")
-        f.write("  $STRUCTURE\n")
-        f.write("    $COOR\n")
-        f.write(_write_nodes(points, 6, FMT_INT, FMT_FLT, node_gids))
-        eid = 0
+        node_gids = None if mesh.point_gids is None else {v: k for k, v in mesh.point_gids.items()}
+        f.write("IDEAS unv file format\n")
+        f.write(f"written by meshio v{__version__}\n")
 
-        for cell_block in mesh.cells:
-            node_idcs = cell_block.data
-            cell_gids = cell_block.cell_gids
-            element_gids = None if cell_gids is None else {v: k for k, v in cell_gids.items()}
-            f.write("!\n")
-            f.write("    $ELEMENT TYPE = " + meshio_to_permas_type[cell_block.type] + "\n")
-            for i, row in enumerate(node_idcs):
-                eid += 1
-                mylist = row.tolist()
-                if cell_block.type in meshio_node_order.keys():
-                    mylist = [mylist[i] for i in meshio_node_order[cell_block.type]]
-                f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
-                                       node_gids, element_gids, i))
+        if points is not None:
+            f.write(_write_dp_nodes(points, node_gids))
+        if mesh.cells is not None:
+            f.write(_write_elements(mesh.cells, node_gids))
 
-        f.write("!\n")
-
-        for point_set, points in mesh.point_sets.items():
-            f.write(f"  $NSET NAME = {point_set:s}\n")
-            f.write(_write_set(points, 80, 6, FMT_INT, node_gids))
-            f.write("!\n")
-
-        for cell_set, cellids in mesh.cell_sets.items():
-            eset = []
-            f.write(f"  $ESET NAME = {cell_set:s}\n")
-            if element_gids is None:
-                f.write(_write_set(points, 80, 6, FMT_INT, cellids))
-            else:
-                offset = 0
-                for cell_block in mesh.cells:
-                    cell_gids = cell_block.cell_gids
-                    if cell_gids is None:
-                        cell_gids = {i + offset: i for i in range(len(cell_block.data))}
-                    else:
-                        element_gids = {v + offset: k for k, v in cell_gids.items()}
-                    for cellid in cellids:
-                        if cellid in element_gids.keys():
-                            eset.append(element_gids[cellid])
-                    offset += len(mesh.cells)
-                f.write(_write_set(eset, 80, 6, FMT_INT, None, id_offset=0))
-            f.write("!\n")
-
-        f.write("  $END STRUCTURE\n")
-        f.write("!\n")
-        f.write("$EXIT COMPONENT\n")
-        f.write("$FIN\n")
+        # TODO:
+        # point sets
+        # cell sets
+        # point data
 
 
 register_format(
@@ -474,8 +476,7 @@ register_format(
 )
 
 if __name__ == "__main__":
-    mesh = read("./res/hex_double.unv")
+    mesh = read("./res/hex_double_in.unv")
     print(mesh)
-    from meshio import permas
-    permas.write("./res/test_hex_double.dat", mesh)
+    write("./res/hex_double_out.unv", mesh)
 
