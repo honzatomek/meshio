@@ -94,7 +94,7 @@ for etype in meshio_to_permas_node_order.keys():
     permas_to_meshio_node_order[etype] = {v: k for k, v in
                                           permas_to_meshio_node_order[etype].items()}
     permas_to_meshio_node_order[etype] = [permas_to_meshio_node_order[etype][i] for i in
-                                       sorted(permas_to_meshio_node_order[etype].keys())]
+                                          sorted(permas_to_meshio_node_order[etype].keys())]
 
 
 def read(filename):
@@ -602,10 +602,6 @@ def write(filename, mesh):
         f.write("    $COOR\n")
         f.write(_write_nodes(points, 6, FMT_INT, FMT_FLT, node_gids))
         eid = 0
-        # tria6_order = [0, 3, 1, 4, 2, 5]
-        # tet10_order = [0, 4, 1, 5, 2, 6, 7, 8, 9, 3]
-        # quad9_order = [0, 4, 1, 7, 8, 5, 3, 6, 2]
-        # wedge15_order = [0, 6, 1, 7, 2, 8, 9, 10, 11, 3, 12, 4, 13, 5, 14]
         for cell_block in mesh.cells:
             node_idcs = cell_block.data
             cell_gids = cell_block.cell_gids
