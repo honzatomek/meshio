@@ -142,6 +142,11 @@ def read_buffer(f):
 
         elif keyword.startswith("$ELEMENT"):
             params_map = get_param_map(keyword[1:]) # , required_keys=["NSET"])
+            # TODO:
+            # wrong logic on assigning gids and meshio point IDs
+            # should first read all, then process it
+            # do not renumber points and cells at the moment of reading
+            # due to PERMAS being lax with the order of keywords
             key, idx, cell_gids = _read_cells(f, keyword, point_gids, params_map)
             if key in _cells.keys():
                 _cells[key]['idx'].extend(idx)
