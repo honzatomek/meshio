@@ -7,7 +7,7 @@ import io
 try:
     from ..__about__ import __version__
     from .._common import warn
-    from .._exceptions import ReadError
+    from .._exceptions import ReadError, WriteError
     from .._files import open_file
     from .._helpers import register_format
     from .._mesh import CellBlock, Mesh
@@ -26,15 +26,15 @@ except ImportError as e:
 
     from meshio.__about__ import __version__
     from meshio._common import warn
-    from meshio._exceptions import ReadError
+    from meshio._exceptions import ReadError, WriteError
     from meshio._files import open_file
     from meshio._helpers import register_format
     from meshio._mesh import CellBlock, Mesh
 
 
-DFLT_COMP = 'KOMPO_1'
-FMT_INT = '{0:11n}'
-FMT_FLT = '{0:13.5E}'
+DFLT_COMP = "KOMPO_1"
+FMT_INT = "{0:11n}"
+FMT_FLT = "{0:13.5E}"
 
 permas_to_meshio_type = {
     "PLOT1":    "vertex",               # DEFAULT
@@ -525,135 +525,246 @@ def get_param_map(word, required_keys=None):
     return param_map
 
 
-def _write_nodes(points: list, offset_len: int=6,
-                 fmt_nid: str=FMT_INT, fmt_coor=FMT_FLT, node_gids: dict=None) -> str:
-    offset = " " * offset_len
-    lines = []
-    for id, coors in enumerate(points):
-        nid = id + 1 if node_gids is None else node_gids[id]
-        lines.append(offset + fmt_nid.format(nid) + "".join([fmt_coor.format(x) for x in coors]))
-    return "\n".join(lines) + "\n"
+def _add_string_to_line(line: str, _line: str, string: str,
+                        offset: str="", max_line_len: int=80, first_val_len: int=1,
+                        continuation: bool=True) -> str:
+    if _line == "":
+        _line = offset
+
+    if continuation:
+        cont = ("{0:<" + str(first_val_len) + "s}").format("&")
+    else:
+        cont = ""
+
+    if len(_line + string) > max_line_len:
+        line += _line + "\n"
+        _line = offset + cont
+    _line += string
+    return line, _line
+
+
+def _write_line(vals: [list | dict], offset: int=0, line_len=80,
+                continuation: bool=True) -> str:
+    """
+    Writes PERMAS line
+
+    In:
+        vals          - a list or dict of key and values pairs
+                        type(vals):
+                            list: guess the format from val type
+                            dict: values must be a None, a str or a list of strings.
+                                  If the value is not None, then separate key and value by
+                                  a = and concatenate values by ' '. I value is None then
+                                  print just the key.
+        offset        - number of space characters at the beginning of line
+        line_len      - if possible, then keep number of characters per line below this
+                       value, when the line is longer use PERMAS line continuation &
+        continuation - bool, if a continuation '&' character should be used
+
+    Out:
+        formated line as a str ending with '\\n' character
+    """
+    line, _line = "", ""
+    offset = " " * offset
+    formats = {"str":     "{0:s}",
+               "int":     FMT_INT,
+               "int32":   FMT_INT,
+               "float":   FMT_FLT,
+               "float64": FMT_FLT}
+
+    if type(vals) is str:
+        vals = get_param_map(vals)
+
+    if type(vals) is dict:
+        for i, (key, val) in enumerate(vals.items()):
+            if i == 0:  # first key of dict
+                key = formats["str"].format(str(key))
+            else:
+                key = " " + formats["str"].format(str(key))
+
+            if val is None:
+                string = key
+            elif type(val) is list:
+                string = key + " = " + " ".join([formats["str"].format(v) for v in val])
+            else:
+                string = key + " = " + formats["str"].format(str(val))
+
+            line, _line = _add_string_to_line(line, _line, string,
+                                              offset, line_len,
+                                              continuation)
+
+    elif type(vals) is list:
+
+        for i, val in enumerate(vals):
+            val_type = str(type(val).__name__)
+            val_type = val_type if val_type in formats.keys() else "str"
+            val_str = formats[val_type].format(val)
+            if i == 0:
+                first_val_len = 2 if val_type == "str" else len(val_str)
+            line, _line = _add_string_to_line(line, _line, val_str,
+                                              offset, line_len, first_val_len,
+                                              continuation)
+
+    if not (_line.strip(" ") == "&" or _line.strip(" ") == ""):
+        line += _line + "\n"
+
+    return line
+
+
+def _write_node(nid: int, coors: list, offset: int=6, node_gid: int=None) -> str:
+    nid = nid + 1 if node_gid is None else node_gid
+    return _write_line([nid] + list(coors), offset=offset)
+
+
+def _write_nodes(points: [list | np.ndarray], offset: int=4, point_gids: dict=None) -> str:
+    if points.shape[1] == 2:
+        warn(
+            "PERMAS requires 3D points, but 2D points given. "
+            "Appending 0.0 as third component."
+        )
+        points = np.column_stack([points, np.zeros_like(points[:, 0])])
+
+    node_gids = None if point_gids is None else {v: k for k, v in point_gids.items()}
+    line = " " * offset + "$COOR\n"
+    for nid, coors in enumerate(points):
+        line += _write_node(nid, coors, offset + 2,
+                            None if node_gids is None else node_gids[nid])
+    return line + "!\n"
 
 
 def _write_element(eid: int, nodes: list, maxlinelen: int=80, offset_len: int=6,
-                   fmt_eid: str=FMT_INT, fmt_nid: str=FMT_INT,
-                   node_gids: list=None, element_gids: list=None, row: int=None) -> str:
+                   node_gids: list=None, element_gid: int=None) -> str:
 
-    if element_gids is not None:
-        eid = element_gids[row]
+    if element_gid is not None:
+        eid = element_gid
 
     if node_gids is not None:
         nodes = [node_gids[node] for node in nodes]
     else:
         nodes = [node + 1 for node in nodes]
 
-    offset = " " * offset_len
-    continuation = ("{0:<" + str(len(fmt_eid.format(1))) + "}").format("&")
-    lines = []
-    nids_strs = (fmt_nid.format(nid) for nid in nodes)
-    ncount = len(nodes)
-    line = offset + fmt_eid.format(eid)
-    for i, n in enumerate(nids_strs):
-        line += n
-        if len(line) + len(n) > maxlinelen or i == ncount - 1:
-            lines.append(line)
-            line = offset + continuation
+    line = _write_line([eid] + nodes, offset=6)
 
-    return "\n".join(lines) + "\n"
+    return line
 
 
-def _write_set(nodes: list, maxlinelen: int=80, offset_len: int=6,
-               fmt_nid: str=FMT_INT, node_gids: list=None, id_offset=1) -> str:
-    lines = []
-    ncount = len(nodes)
-    if node_gids is not None:
-        nodes = [node_gids[node] for node in nodes]
+def _write_elements(cells: list, offset: int=4, point_gids: dict=None) -> str:
+    node_gids = None if point_gids is None else {v: k for k, v in point_gids.items()}
+    line = ""
+    eid = 0
+    for cell_block in cells:
+        node_idcs = cell_block.data
+        cell_gids = cell_block.cell_gids
+        element_gids = None if cell_gids is None else {v: k for k, v in cell_gids.items()}
+
+        line += " " * offset + "$ELEMENT TYPE = " + meshio_to_permas_type[cell_block.type] + "\n"
+        for i, row in enumerate(node_idcs):
+            eid += 1
+            mylist = row.tolist()
+            if cell_block.type in meshio_to_permas_node_order.keys():
+                mylist = [mylist[i] for i in meshio_to_permas_node_order[cell_block.type]]
+            line += _write_element(eid, mylist, 80, offset + 2,
+                                   node_gids, None if element_gids is None else element_gids[i])
+        line += "!\n"
+
+    return line
+
+
+def _write_set_ids(ids: list, maxlinelen: int=80, offset: int=6,
+               gids: dict=None, id_offset=1) -> str:
+    # lines = []
+    icount = len(ids)
+    if gids is not None:
+        ids = [gids[id] for id in ids]
     else:
-        nodes = [node + id_offset for node in nodes]
-    offset = " " * offset_len
-    nids_strs = (fmt_nid.format(nid) for nid in nodes)
-    line = offset
-    for i, n in enumerate(nids_strs):
-        line += n
-        if len(line) + len(n) > maxlinelen or i == ncount - 1:
-            lines.append(line)
-            line = offset
+        ids = [id + id_offset for id in ids]
 
-    return "\n".join(lines) + "\n"
+    line = _write_line(ids, offset=offset, continuation=False)
+
+    return line
+
+
+def _write_nodal_set(name: str, points: list, offset: int=4, point_gids: dict=None) -> str:
+    name = name if " " not in name else "'" + name + "'"
+    line = " " * offset + f"$NSET NAME = {str(name):s}\n"
+    node_gids = None if point_gids is None else {v: k for k, v in point_gids.items()}
+    line += _write_set_ids(points, 80, offset + 2, node_gids, 1)
+
+    return line
+
+
+def _write_nodal_sets(point_sets: dict, offset: int=4, point_gids: dict=None) -> str:
+    line = ""
+    for point_set, points in point_sets.items():
+        line += _write_nodal_set(point_set, points, offset, point_gids)
+        line += "!\n"
+
+    return line
+
+def _write_element_set(name: str, cellids: list, cells: list, offset=4) -> str:
+    name = name if " " not in name else "'" + name + "'"
+    line = " " * offset + f"$ESET NAME = {str(name):s}\n"
+
+    cell_offset = 0
+    element_gids = {}
+    for cell_block in cells:
+        cell_gids = cell_block.cell_gids
+        if cell_gids is None:
+            _element_gids = {i + cell_offset: i for i in range(len(cell_block.data))}
+        else:
+            _element_gids = {v + cell_offset: k for k, v in cell_gids.items()}
+        element_gids.update(_element_gids)
+        cell_offset += len(mesh.cells)
+
+    line += _write_set_ids(cellids, 80, offset + 2, element_gids, id_offset=0)
+
+    return line
+
+
+def _write_element_sets(cell_sets, cells: list, offset: int=4) -> str:
+    line = ""
+    for cell_set, cellids in cell_sets.items():
+        line += _write_element_set(cell_set, cellids, cells, offset=offset) + "!\n"
+
+    return line
+
+
+def _write_structure(mesh, offset: int=2) -> str:
+    line = " " * offset + "$STRUCTURE\n"
+    line += _write_nodes(mesh.points, offset + 2, mesh.point_gids)
+    line += _write_elements(mesh.cells, offset + 2, mesh.point_gids)
+    line += _write_nodal_sets(mesh.point_sets, offset + 2, mesh.point_gids)
+    line += _write_element_sets(mesh.cell_sets, mesh.cells, offset + 2)
+    line += " " * offset + "$END STRUCTURE\n!\n"
+
+    return line
+
+
+def _write_component(mesh, offset: int=0) -> str:
+    line = f"$ENTER COMPONENT NAME = {DFLT_COMP:s}\n"
+    line += _write_structure(mesh,  offset + 2)
+    line += "$EXIT COMPONENT\n!\n"
+
+    return line
 
 
 def write(filename, mesh):
-    if mesh.points.shape[1] == 2:
-        warn(
-            "PERMAS requires 3D points, but 2D points given. "
-            "Appending 0 third component."
-        )
-        points = np.column_stack([mesh.points, np.zeros_like(mesh.points[:, 0])])
-    else:
-        points = mesh.points
+    line = "! PERMAS DataFile Version 18.0\n"
+    line += f"! written by meshio v{__version__}\n"
+    line += _write_component(mesh, offset=0)
+    line += "$FIN\n"
 
     with open_file(filename, "wt") as f:
-        node_gids = None if mesh.point_gids is None else {v: k for k, v in mesh.point_gids.items()}
-        point_gids = mesh.point_gids
-        f.write("! PERMAS DataFile Version 18.0\n")
-        f.write(f"! written by meshio v{__version__}\n")
-        f.write(f"$ENTER COMPONENT NAME = {DFLT_COMP:s}\n")
-        f.write("  $STRUCTURE\n")
-        f.write("    $COOR\n")
-        f.write(_write_nodes(points, 6, FMT_INT, FMT_FLT, node_gids))
-        eid = 0
-        for cell_block in mesh.cells:
-            node_idcs = cell_block.data
-            cell_gids = cell_block.cell_gids
-            element_gids = None if cell_gids is None else {v: k for k, v in cell_gids.items()}
-            f.write("!\n")
-            f.write("    $ELEMENT TYPE = " + meshio_to_permas_type[cell_block.type] + "\n")
-            for i, row in enumerate(node_idcs):
-                eid += 1
-                mylist = row.tolist()
-                if cell_block.type in meshio_to_permas_node_order.keys():
-                    mylist = [mylist[i] for i in meshio_to_permas_node_order[cell_block.type]]
-                f.write(_write_element(eid, mylist, 80, 6, FMT_INT, FMT_INT,
-                                       node_gids, element_gids, i))
-        f.write("!\n")
-
-        for point_set, points in mesh.point_sets.items():
-            f.write(f"  $NSET NAME = {point_set:s}\n")
-            f.write(_write_set(points, 80, 6, FMT_INT, node_gids))
-            f.write("!\n")
-
-        for cell_set, cellids in mesh.cell_sets.items():
-            eset = []
-            f.write(f"  $ESET NAME = {cell_set:s}\n")
-            if element_gids is None:
-                f.write(_write_set(points, 80, 6, FMT_INT, cellids))
-            else:
-                offset = 0
-                for cell_block in mesh.cells:
-                    cell_gids = cell_block.cell_gids
-                    if cell_gids is None:
-                        cell_gids = {i + offset: i for i in range(len(cell_block.data))}
-                    else:
-                        element_gids = {v + offset: k for k, v in cell_gids.items()}
-                    for cellid in cellids:
-                        if cellid in element_gids.keys():
-                            eset.append(element_gids[cellid])
-                    offset += len(mesh.cells)
-                f.write(_write_set(eset, 80, 6, FMT_INT, None, id_offset=0))
-            f.write("!\n")
-
-        f.write("  $END STRUCTURE\n")
-        f.write("!\n")
-        f.write("$EXIT COMPONENT\n")
-        f.write("$FIN\n")
+        f.write(line)
 
 
 register_format(
-    "permas", [".post", ".post.gz", ".dato", ".dato.gz"], read, {"permas": write}
+    "permas", [".post", ".post.gz", ".dato", ".dato.gz", ".dat1", ".dat2"], read, {"permas": write}
 )
 
 if __name__ == "__main__":
-    mesh = read("./test_in.dat")
+    from meshio import unv
+    mesh = read("./res/hex_paraview_in.dat1")
     print(mesh)
-    write("./test_out.dat", mesh)
+    write("./res/hex_paraview_out.dat1", mesh)
 
