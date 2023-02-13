@@ -32,17 +32,19 @@ except ImportError as e:
     from meshio._mesh import CellBlock, Mesh
 
 
-DELIMITER = f'{-1:6n}'
+DELIMITER = f"{-1:6n}"
 FMT_DTS = "{0:>6n}"
 FMT_INT = "{0:10n}"
 FMT_FLT = "{0:13.5E}"
 FMT_DBL = "{0:25.16E}"
+FMT_STR = "{0:<80s}"
+
 
 unv_to_meshio_dataset = {
     15: "NODE1P",
   2411: "NODE2P",
   2412: "ELEMENT",
-    55: "NODAL DATA"
+    55: "NODAL DATA",
 }
 meshio_to_unv_dataset = {v: k for k, v in unv_to_meshio_dataset.items()}
 
@@ -88,11 +90,164 @@ for etype in meshio_to_unv_node_order.keys():
     unv_to_meshio_node_order[etype] = [unv_to_meshio_node_order[etype][i] for i in
                                        sorted(unv_to_meshio_node_order[etype].keys())]
 
+# TODO:
+unv_to_meshio_analysis_type = {
+     "Unknown":                         "unknown",
+     "Static":                          "static",
+     "Normal Mode":                     "modal",
+     "Complex eigenvalue first order":  "modal complex",
+     "Transient":                       "transient",
+     "Frequency Response":              "frequency response",
+     "Buckling":                        "buckling",
+     "Complex eigenvalue second order": "modal comlex",
+}
+meshio_to_unv_analysis_type = {
+    "unknown":            0,
+    "static":             1,
+    "modal":              2,
+    "modal complex":      3,
+    "transient":          4,
+    "frequency response": 5,
+    "buckling":           6,
+}
+
+unv_to_meshio_data_characteristic = {
+     "Unknown":                 "unknown",
+     "Scalar":                  "field",
+     "3 DOF Global Vector":     "vector3",
+     "6 DOF Global Vector":     "vector6",
+     "Symmetric Global Tensor": "tensors",
+     "General Global Tensor":   "tensorg",
+}
+meshio_to_unv_data_characteristic = {
+    "unknown":    0,
+    "field":      1,
+    "vector3":    2,
+    "vector6":    3,
+    "tensors":    4,
+    "tensorg":    5,
+}
+
+unv_to_meshio_data_type = {
+    "Unknown":                 "unknown",
+    "General":                 "general",
+    "Stress":                  "stress",
+    "Strain":                  "strain",
+    "Element Force":           "force",
+    "Temperature":             "temperature",
+    "Heat Flux":               "heat flux",
+    "Strain Energy":           "strain energy",
+    "Displacement":            "displacement",
+    "Reaction Force":          "reaction",
+    "Kinetic Energy":          "kinetic energy",
+    "Velocity":                "velocity",
+    "Acceleration":            "acceleration",
+    "Strain Energy Density":   "strain energy density",
+    "Kinetic Energy Density":  "kinetic energy density",
+    "Hydro-Static Pressure":   "pressure",
+    "Heat Gradient":           "heat",
+    "Code Checking Value":     "check",
+    "Coefficient Of Pressure": "pressure coefficient",
+}
+meshio_to_unv_data_type = {
+    "unknown":                 0,
+    "general":                 1,
+    "stress":                  2,
+    "strain":                  3,
+    "force":                   4,
+    "temperature":             5,
+    "heat flux":               6,
+    "strain energy":           7,
+    "displacement":            8,
+    "reaction":                9,
+    "kinetic energy":         10,
+    "velocity":               11,
+    "acceleration":           12,
+    "strain energy density":  13,
+    "kinetic energy density": 14,
+    "pressure":               15,
+    "heat":                   16,
+    "check":                  17,
+    "pressure coefficient":   18,
+}
+
+unv_to_meshio_value_type = {
+    "Real":    "real",
+    "Complex": "complex",
+}
+meshio_to_unv_value_type = {
+    "real":    2,
+    "complex": 5,
+}
+
+unv_point_data_model_type = {
+     0: "Unknown",
+     1: "Structural",
+     2: "Heat Transfer",
+     3: "Fluid Flow",
+}
+
+unv_point_data_analysis_type = {
+     0: "Unknown",
+     1: "Static",
+     2: "Normal Mode",
+     3: "Complex eigenvalue first order",
+     4: "Transient",
+     5: "Frequency Response",
+     6: "Buckling",
+     7: "Complex eigenvalue second order",
+}
+
+unv_point_data_data_characteristic = {
+     0: "Unknown",
+     1: "Scalar",
+     2: "3 DOF Global Vector",
+     3: "6 DOF Global Vector",
+     4: "Symmetric Global Tensor",
+     5: "General Global Tensor",
+}
+
+unv_point_data_value_count = {
+    "Scalar": 1,
+    "3 DOF Global Vector": 3,
+    "6 DOF Global Vector": 6,
+    "Symmetric Global Tensor": 6,
+    "General Global Tensor": 9,
+}
+
+unv_point_data_specific_data_type = {
+     0: "Unknown",
+     1: "General",
+     2: "Stress",
+     3: "Strain",
+     4: "Element Force",
+     5: "Temperature",
+     6: "Heat Flux",
+     7: "Strain Energy",
+     8: "Displacement",
+     9: "Reaction Force",
+    10: "Kinetic Energy",
+    11: "Velocity",
+    12: "Acceleration",
+    13: "Strain Energy Density",
+    14: "Kinetic Energy Density",
+    15: "Hydro-Static Pressure",
+    16: "Heat Gradient",
+    17: "Code Checking Value",
+    18: "Coefficient Of Pressure",
+}
+
+unv_point_data_data_type = {
+     2: "Real",
+     5: "Complex",
+}
+
 
 def read(filename):
     """Reads a IDEAS unv file."""
     with open_file(filename, "r") as f:
         out = read_buffer(f)
+
     return out
 
 
@@ -145,10 +300,7 @@ def read_buffer(f):
 
             # TODO:
             elif unv_to_meshio_dataset[dataset] == "NODAL DATA":
-                _read_dataset(f)
-
-            # TODO:
-            # nsets, elsets
+                point_data = _update_dict_of_dicts(point_data, _read_point_data(f))
 
         # too many datasets to specifically skip them
         else:
@@ -174,10 +326,13 @@ def read_buffer(f):
     cells = [CellBlock(etype, np.array(cells[etype], dtype=np.int32),
                        cell_gids=cell_gids[etype]) for etype in cells.keys()]
 
-    return Mesh(
-        points, cells, point_data=point_data, cell_data=cell_data, field_data=field_data,
-        point_sets=nsets, cell_sets=elsets, point_gids=point_gids
-    )
+    point_data = _process_point_data(point_data, point_gids)
+
+    if read_point_data:
+        return Mesh(
+            points, cells, point_data=point_data, cell_data=cell_data, field_data=field_data,
+            point_sets=nsets, cell_sets=elsets, point_gids=point_gids
+        )
 
 
 def _read_sp_nodes(f):
@@ -337,6 +492,285 @@ def _read_cells(f):
     return cells, cell_gids
 
 
+def _update_dict_of_dicts(base: dict, data: dict) -> dict:
+    """
+    Merges data from one multilevel dictionary to another one.
+    At the lowest level the data are overwritten.
+
+    Example:
+    -------
+    >>> a = {'a': {'b': {'c': [1, 2, 3]}}}
+    >>> b = {'a': {'b': {'d': [4, 5, 6]}}}
+    >>> c = {'a': {'b': {'d': [7, 8, 9]}}}
+
+    >>> print(f"a =     {a}")
+    a =     {'a': {'b': {'c': [1, 2, 3]}}}
+
+    >>> a = _update_dict_of_dicts(a, b)
+    >>> print(f"a + b = {a}")
+    a + b = {'a': {'b': {'c': [1, 2, 3], 'd': [4, 5, 6]}}}
+
+    >>> a = _update_dict_of_dicts(a, c)
+    >>> print(f"a + c = {a}")
+    a + c = {'a': {'b': {'c': [1, 2, 3], 'd': [7, 8, 9]}}}
+    """
+    for key in data.keys():
+        if type(data[key]) is not dict or key not in base.keys():
+            base.update(data)
+        else:
+            base[key] = _update_dict_of_dicts(base[key], data[key])
+
+    return base
+
+
+def read_point_data(f):
+    points = []
+    # Initialize the optional data fields
+    point_gids = []
+    point_data = {}
+
+    while True:
+        last_pos = f.tell()
+        line = f.readline().strip("\n")
+        if not line:          # EOF
+            break
+        if line != DELIMITER: # comments
+            continue
+        last_pos = f.tell()   # in dataset, read next line = dataset number
+        line = f.readline().strip("\n")
+        if not line:          # EOF
+            break
+
+        dataset = int(line.strip())              # dataset number
+        if dataset in unv_to_meshio_dataset.keys():  # known dataset number
+            # read points to get their IDs
+            if unv_to_meshio_dataset[dataset] == "NODE1P":
+                _points, _point_gids = _read_sp_nodes(f)
+                points.extend(_points)
+                point_gids.extend(_point_gids)
+
+            # read points to get their IDs
+            elif unv_to_meshio_dataset[dataset] == "NODE2P":
+                _points, _point_gids = _read_dp_nodes(f)
+                points.extend(_points)
+                point_gids.extend(_point_gids)
+
+            # TODO:
+            elif unv_to_meshio_dataset[dataset] == "NODAL DATA":
+                point_data = _update_dict_of_dicts(point_data, _read_point_data(f))
+
+        # too many datasets to specifically skip them
+        else:
+            _read_dataset(f)
+
+    # prepare point gids
+    point_gids = {point_gids[i]: i for i in range(len(point_gids.keys()))}
+
+    point_data = _process_point_data(point_data, point_gids)
+
+    return point_data
+
+
+def _process_point_data(point_data: dict, point_gids: dict):
+    # TODO:
+    # renumber point_data according to point_gids
+    for lcase in point_data.keys():
+        for lstep in point_data[lcase].keys():
+            data_gids = point_data[lcase][lstep]["gids"]
+            data_gids = {data_gids[i]: i for i in range(len(data_gids))}
+            # insert zero values to points that were not written in dataset 55
+            # and order point data the same as points
+            values = point_data[lcase][lstep]["values"]
+            numvals = values.shape[1]
+            data = []
+            for gid in point_gids.keys():
+                if gid in data_gids.keys():
+                    data.append(values[data_gids[gid]])
+                else:
+                    data.append([0.] * numvals)
+            data = np.array(data, dtype=np.float64)
+            point_data[lcase][lstep]["values"] = data
+            point_data[lcase][lstep]["gids"] = np.array(list(point_gids.keys()), dtype=np.int32)
+
+    return point_data
+
+
+def _read_point_data(f) -> dict:
+    point_data = {}
+
+    point_data_header = _read_point_data_header(f)
+    point_data_values = _read_point_data_lines(f, point_data_header["load case"],
+                                                  point_data_header["value count"],
+                                                  point_data_header["data type"])
+
+    lcase = point_data_header["load case"]
+    step = "{0:10n} - {1:13.5E}".format(point_data_header["load step"],
+                                        point_data_header["step value"])
+    point_data[lcase] = {step: {"header": point_data_header,
+                                "values": np.array(list(point_data_values.values()), dtype=float),
+                                "gids":   list(point_data_values.keys())}}
+    return point_data
+
+
+def _read_line(f, err: str) -> (str, int, str):
+    last_pos = f.tell()
+    line = f.readline().strip("\n")
+    _err = ""
+    if not line:
+        _err = "File ended before and and of Dataset block."
+    elif line == DELIMITER:
+        _err = err
+    return line, last_pos, _err
+
+
+def _read_point_data_header(f):
+    """
+    Function to read Nodal Data dataset header
+    """
+    point_data_header = {}
+
+    err = ""
+    for h in range(1): # process first 8 records = result dataset header
+        description = []
+        # read description - records 1 to 5
+        for i in range(5):
+            line, last_pos, _err = _read_line(f, "Dataset 55 missing records 1-5.")
+            if _err != "":
+                err += _err + "\n"
+                break
+            description.append(line.strip())
+        if err != "":
+            break
+        description = " ".join([d for d in description if d != "" or d != "NONE"])
+
+        # read data defintion - record 6
+        line, last_pos, _err = _read_line(f, "Dataset 55 record 6 missing.")
+        if _err != "":
+            err += _err + "\n"
+            break
+        dd = [line[j*10:(j+1)*10] for j in range(6)]
+        dd = [int(line[j*10:(j+1)*10].strip()) for j in range(6)]
+        model_type = unv_point_data_model_type[dd[0]]
+        analysis_type = unv_point_data_analysis_type[dd[1]]
+        data_characteristic = unv_point_data_data_characteristic[dd[2]]
+        specific_data_type = unv_point_data_specific_data_type[dd[3]]
+        data_type = unv_point_data_data_type[dd[4]]
+        numvals = dd[5]
+
+        # read data defintion - record 7
+        # TODO:
+        # what if numints > 6 ?
+        line, last_pos, _err = _read_line(f, "Dataset 55 missing record 7.")
+        if _err != "":
+            err += _err + "\n"
+            break
+        numints = int(line[:10].strip())
+        numreals = int(line[10:20].strip())
+        ints = []
+        line = line[20:]
+        while len(ints) < numints:
+            ints += [int(line[(i*10):((i+1)*10)].strip()) for i in range(int(len(line) / 10))]
+            if len(ints) < numints:
+                line, last_pos, _err = _read_line(f, "Dataset 55 incomplete record 7.")
+                if _err != "":
+                    err += _err + "\n"
+                    break
+        if _err != "":
+            err += _err + "\n"
+            break
+
+        # read data defintion - record 8
+        # TODO:
+        # what if numreals > 6 ?
+        reals = []
+        while len(reals) < numreals:
+            line, last_pos, _err = _read_line(f, "Dataset 55 missing record 8.")
+            if _err != "":
+                err += _err + "\n"
+                break
+            reals += [float(line[i*13:(i+1)*13].strip()) for i in range(int(len(line) / 13))]
+
+        # process it
+        if numints == 1:
+            point_data_lcase = ints[0] # lcase ID
+        elif numints > 1:
+            point_data_lcase = ints[0] # lcase ID
+            point_data_step = ints[1]
+        else:
+            point_data_lcase = 0
+            point_data_step = 0
+
+        # TODO:
+        # not sure about the second order, might be general analysis type records
+        if analysis_type in ("Complex eigenvalue first order",
+                             "Complex eigenvalue second order"):
+            point_data_stepval = complex(reals[0], reals[1])
+        elif numreals > 0:
+            point_data_stepval = reals[0]
+        else:
+            point_data_stepval = 0.0
+
+        break
+
+    if err != "":
+        raise ReadError(err)
+
+    point_data_header = {
+        # "model type": model_type,
+        "analysis type": unv_to_meshio_analysis_type[analysis_type],
+        "data characteristic": unv_to_meshio_data_characteristic[data_characteristic],
+        "specific data type": unv_to_meshio_data_type[specific_data_type],
+        "data type": unv_to_meshio_value_type[data_type],
+        "value count": numvals,
+        "load case": point_data_lcase,
+        "load step": point_data_step,
+        "step value": point_data_stepval,
+    }
+
+    return point_data_header
+
+
+def _read_point_data_lines(f, lcase: int, numvals: int=3, valtype: str="Real") -> dict:
+    """
+    Function to read Nodal Data dataset header
+    """
+    if valtype == "Complex":
+        numvals *= 2
+
+    point_data = {}
+
+    err = ""
+    # read point data
+    while True:
+        # read node ID
+        last_pos = f.tell()
+        line = f.readline().strip("\n")
+        if not line:
+            err += f"File ended before the end of Dataset 55 (Load Case {lcase:n}) block.\n"
+            break
+        if line == DELIMITER:
+            break
+
+        point_id = int(line[:10].strip())
+
+        data = []
+        while len(data) < numvals:
+            line, last_pos, _err = _read_line(f, f"Dataset 55 (Load Case {lcase:n}) " +
+                                                 f"Node {point_id:n} data of wrong length.")
+            if _err != "":
+                err += _err + "\n"
+                break
+
+            data += [float(line[i*13:(i+1)*13].strip()) for i in range(int(len(line) / 13))]
+
+        if valtype == "Complex":
+            data = [complex(data[i], data[i+1]) for i in range(0, numvals, 2)]
+
+        point_data.setdefault(point_id, data)
+
+    return point_data
+
+
 def _read_dataset(f):
     """
     Dummy function to skip unknown datasets
@@ -397,6 +831,18 @@ def _write_dp_nodes(points: np.ndarray, node_gids: dict=None) -> str:
     return dataset
 
 
+def _write_line(values: [list | np.ndarray], maxval: int, fmt: str) -> str:
+    line = ""
+    for i in range(len(values)):
+        line += fmt.format(values[i])
+        if (i + 1) % maxval == 0:
+            line += "\n"
+    if not line.endswith("\n"):
+        line += "\n"
+
+    return line
+
+
 def _write_elements(cells: list, node_gids: dict = None) -> str:
     pid = 1
     mid = 1
@@ -436,17 +882,103 @@ def _write_elements(cells: list, node_gids: dict = None) -> str:
                 dataset += f"{0:10n}{0:10n}{0:10n}\n"
 
             # nodes
-            for i in range(numnodes):
-                dataset += f"{nodes[i]:10n}"
-                if (i + 1) % 8 == 0:
-                    dataset += "\n"
-            if not dataset.endswith("\n"):
-                dataset += "\n"
+            dataset += _write_line(nodes, 8, FMT_INT)
+            # for i in range(numnodes):
+            #     dataset += f"{nodes[i]:10n}"
+            #     if (i + 1) % 8 == 0:
+            #         dataset += "\n"
+            # if not dataset.endswith("\n"):
+            #     dataset += "\n"
             cid += 1
 
     dataset += DELIMITER + "\n"
 
     return dataset
+
+# TODO:
+def _write_nodal_data(point_data: np.ndarray, header: dict, point_gids: dict=None) -> str:
+    dataset = DELIMITER + "\n"
+    dataset += FMT_DTS.format(meshio_to_unv_dataset["NODAL DATA"]) + "\n"
+    for i in range(5):
+        dataset += "NONE\n"
+
+    mt = 1
+    at = meshio_to_unv_analysis_type[header["analysis type"]]
+    dc = meshio_to_unv_data_characteristic[header["data characteristic"]]
+    sd = meshio_to_unv_data_type[header["specific data type"]]
+    dt = meshio_to_unv_value_type[header["data type"]]
+    vc = header["value count"]
+
+    lc = header["load case"]
+    ls = header["load step"]
+    sv = header["step value"]
+
+    for val in (mt, at, dc, sd, dt, vc):
+        dataset += FMT_INT.format(val)
+    dataset += "\n"
+
+    if at in (0, 1, 6): # unknown, static, buckling
+        for val in (1, 1, lc):
+            dataset += FMT_INT.format(val)
+        dataset += "\n"
+        dataset += FMT_FLT.format(sv) + "\n"
+    elif at == 2:       # modal
+        for val in (2, 4, lc, ls):
+            dataset += FMT_INT.format(val)
+        dataset += "\n"
+        for val in (sv, 0.0, 0.0, 0.0):
+            dataset += FMT_FLT.format(val)
+        dataset += "\n"
+    elif at == 3:       # complex modal
+        for val in (2, 6, lc, ls):
+            dataset += FMT_INT.format(val)
+        dataset += "\n"
+        for val in (sv.real, sv.imag, 0.0, 0.0, 0.0, 0.0):
+            dataset += FMT_FLT.format(val)
+        dataset += "\n"
+    elif at in (4, 5):  # transient, frequency response
+        for val in (2, 1, lc, ls):
+            dataset += FMT_INT.format(val)
+        dataset += "\n"
+        dataset += FMT_FLT.format(sv) + "\n"
+    else:               # general format
+        for val in (2, 1, lc, ls):
+            dataset += FMT_INT.format(val)
+        dataset += "\n"
+        dataset += FMT_FLT.format(sv) + "\n"
+
+    if point_gids is None:
+        node_gids = {i: i + 1 for i in range(len(point_data))}
+    else:
+        node_gids = {v: k for k, v in point_gids.items()}
+
+    for i, row in enumerate(point_data):
+        dataset += FMT_INT.format(node_gids[i]) + "\n"
+        for j, val in enumerate(row):
+            dataset += FMT_FLT.format(val)
+            if (j + 1) % 6 == 0:
+                dataset += "\n"
+        if not dataset.endswith("\n"):
+            dataset += "\n"
+
+    dataset += DELIMITER + "\n"
+
+    return dataset
+
+
+def _write_point_data(point_data: np.ndarray, point_gids: list=None) -> str:
+    datasets = ""
+    # TODO:
+    if "header" not in point_data.keys():
+        analysis_type = "unknown"
+        # header = {"analysis type": "unknown",
+        #           "data chara
+
+    for lcase in point_data.keys():
+        for load_step in point_data[lcase].keys():
+            datasets += _write_nodal_data(point_data[lcase][load_step], point_gids)
+
+    return datasets
 
 
 def write(filename, mesh):
@@ -481,7 +1013,39 @@ register_format(
 )
 
 if __name__ == "__main__":
-    mesh = read("./res/hex_double_in.unv")
-    print(mesh)
-    write("./res/hex_double_out.unv", mesh)
+    point_data = np.random.rand(100, 3)
+    header = {
+        "analysis type":             "static",
+        "data characteristic":      "vector3",
+        "specific data type":  "displacement",
+        "data type":                   "real",
+        "value count":                      3,
+        "load case":                      101,
+        "load step":                        1,
+        "step value":                     0.0,
+    }
+
+    dataset = _write_nodal_data(point_data, header)
+    print(dataset)
+
+
+    # mesh = read("./res/hex_double_in.unv")
+    # print(mesh)
+    # # print(point_data)
+    # write("./res/hex_double_out.unv", mesh)
+    # from meshio import vtk
+    # id = 0
+    # for lcase, lcase_data in mesh.point_data.items():
+    #     for lstep, lstep_data in lcase_data.items():
+    #         # reformated = dict()
+    #         # reformated["x"] = lstep_data["values"][:,0]
+    #         # reformated["Y"] = lstep_data["values"][:,1]
+    #         # reformated["Z"] = lstep_data["values"][:,2]
+
+    #         # print(f"{reformated = }")
+
+    #         mesh.point_data = {f"{lstep_data['header']['step value']:.5E}": lstep_data["values"]}
+
+    #         vtk.write(f"./res/hex_double_out_{id+1:04n}.vtk", mesh, "4.2", binary=False)
+    #         id += 1
 
