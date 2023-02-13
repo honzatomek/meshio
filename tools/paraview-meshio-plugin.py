@@ -9,7 +9,17 @@ from paraview.util.vtkAlgorithm import (
 from vtkmodules.numpy_interface import dataset_adapter as dsa
 from vtkmodules.vtkCommonDataModel import vtkUnstructuredGrid
 
-import meshio
+try:
+    import meshio
+
+except ImportError as e:
+    import os
+    import sys
+    _MESHIO_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "src")
+    print(f"{_MESHIO_DIR = }")
+    sys.path.append(_MESHIO_DIR)
+    import meshio
+
 
 paraview_plugin_version = meshio.__version__
 vtk_to_meshio_type = meshio._vtk_common.vtk_to_meshio_type
@@ -67,7 +77,9 @@ class MeshioReader(VTKPythonAlgorithmBase):
             self.Modified()
 
     def RequestData(self, request, inInfoVec, outInfoVec):
+        # print(f"{str(outInfoVec) = }")
         output = dsa.WrapDataObject(vtkUnstructuredGrid.GetData(outInfoVec))
+        # print(f"{str(output) = }")
 
         # Use meshio to read the mesh
         mesh = meshio.read(self._filename, self._file_format)
@@ -82,7 +94,11 @@ class MeshioReader(VTKPythonAlgorithmBase):
         cell_types = np.array([], dtype=np.ubyte)
         cell_offsets = np.array([], dtype=int)
         cell_conn = np.array([], dtype=int)
-        for meshio_type, data in cells:
+        # for meshio_type, data in cells:
+        # for meshio_type, data in cells.items():
+        for cell_block in cells:
+            meshio_type = cell_block.type
+            data = cell_block.data
             vtk_type = meshio_to_vtk_type[meshio_type]
             ncells, npoints = data.shape
             cell_types = np.hstack(
@@ -97,8 +113,9 @@ class MeshioReader(VTKPythonAlgorithmBase):
         output.SetCells(cell_types, cell_offsets, cell_conn)
 
         # Point data
-        for name, array in mesh.point_data.items():
-            output.PointData.append(array, name)
+        print(f"{str(output.PointData) = }")
+        # for name, array in mesh.point_data.items():
+        #     output.PointData.append(array, name)
 
         # Cell data
         for name, data in mesh.cell_data.items():
@@ -193,3 +210,4 @@ class MeshioWriter(VTKPythonAlgorithmBase):
     def Write(self):
         self.Modified()
         self.Update()
+

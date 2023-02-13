@@ -164,13 +164,25 @@ class Mesh:
         self.info = info
 
         # assert point data consistency and convert to numpy arrays
+        # TODO:
+        # only one load case possible
+        # should have more levels e.g.:
+        # point_data[load case] = {"id":     int id e.g. Mode Shape
+        #                          "value":  float value e.g. Eigenfrequency
+        #                          "info":   dict e.g. model type, analysis type..., voluntary
+        #                          "vector": {"vector name": str vector_name e.g. "DISP",
+        #                                     "type":        real or complex}
+        #                                     "values":      np.array}
+        #                         }
+        # the same should apply to cell data and field data
         for key, item in self.point_data.items():
-            self.point_data[key] = np.asarray(item)
-            if len(self.point_data[key]) != len(self.points):
-                raise ValueError(
-                    f"len(points) = {len(self.points)}, "
-                    f'but len(point_data["{key}"]) = {len(self.point_data[key])}'
-                )
+            if not type(item) is dict: # keep legacy, add new
+                self.point_data[key] = np.asarray(item)
+                if len(self.point_data[key]) != len(self.points):
+                    raise ValueError(
+                        f"len(points) = {len(self.points)}, "
+                        f'but len(point_data["{key}"]) = {len(self.point_data[key])}'
+                    )
 
         # assert cell data consistency and convert to numpy arrays
         for key, data in self.cell_data.items():
@@ -222,7 +234,8 @@ class Mesh:
             lines.append(f"  Cell sets: {names}")
 
         if self.point_data:
-            names = ", ".join(self.point_data.keys())
+            # print(f"{self.point_data = }")
+            names = ", ".join([str(k) for k in self.point_data.keys()])
             lines.append(f"  Point data: {names}")
 
         if self.cell_data:
@@ -264,6 +277,18 @@ class Mesh:
         # concatenate
         for key, value in cells_dict.items():
             cells_dict[key] = np.concatenate(value)
+        return cells_dict
+
+    @property
+    def cells_dict_paraview(self):
+        cells_dict = {}
+        for cell_block in self.cells:
+            if cell_block.type not in cells_dict:
+                cells_dict[cell_block.type] = []
+            cells_dict[cell_block.type].append(cell_block.data)
+        # concatenate
+        # for key, value in cells_dict.items():
+        #     cells_dict[key] = np.concatenate(value)
         return cells_dict
 
     @property
