@@ -645,8 +645,8 @@ def write(filename, mesh, binary=True):
         # write point data
         if mesh.point_data:
             num_points = mesh.points.shape[0]
-            f.write(f"POINT_DATA {num_points}\n".encode())
-            _write_field_data(f, mesh.point_data, binary)
+            # _write_field_data(f, mesh.point_data, binary)
+            _write_data(f, mesh.point_data, binary)
 
         # write cell data
         if mesh.cell_data:
@@ -670,10 +670,14 @@ def _write_points(f, points, binary):
         # ):
         #     logging.warn("Converting to new byte order")
         points.astype(points.dtype.newbyteorder(">")).tofile(f, sep="")
+        f.write(b"\n")
     else:
         # ascii
-        points.tofile(f, sep=" ")
-    f.write(b"\n")
+        # points.tofile(f, sep=" ")
+        for p in points:
+            p.tofile(f, sep=" ")
+            f.write(b"\n")
+    # f.write(b"\n")
 
 
 def _write_cells(f, cells, binary):
@@ -709,10 +713,12 @@ def _write_cells(f, cells, binary):
                 d = d[:, new_order]
 
             # prepend a column with the value n
-            np.column_stack(
-                [np.full(c.data.shape[0], n, dtype=c.data.dtype), d]
-            ).tofile(f, sep="\n")
-            f.write(b"\n")
+            d = np.column_stack(
+                [np.full(c.data.shape[0], n, dtype=c.data.dtype), d]) #.tofile(f, sep=" ")
+            for dd in d:
+                dd.tofile(f, sep=" ")
+                f.write(b"\n")
+            # f.write(b"\n")
 
     # write cell types
     f.write(f"CELL_TYPES {total_num_cells}\n".encode())
@@ -761,3 +767,44 @@ def _write_field_data(f, data, binary):
             values.tofile(f, sep=" ")
             # np.savetxt(f, points)
         f.write(b"\n")
+
+
+def _write_data(f, data, binary):
+    # f.write((f"FIELD FieldData {len(data)}\n").encode())
+    f.write(f"POINT_DATA {num_points}\n".encode())
+    for name, values in data.items():
+        if isinstance(values, list):
+            values = np.concatenate(values)
+        if len(values.shape) == 1:
+            num_tuples = values.shape[0]
+            num_components = 1
+        else:
+            num_tuples = values.shape[0]
+            num_components = values.shape[1]
+
+        if " " in name:
+            raise WriteError(f"VTK doesn't support spaces in field names ('{name}').")
+
+        if num_components == 1:
+            f.write("SCALARS {0:s} {1:s}\n".format(name,
+                    numpy_to_vtk_dtype[values.dtype.name]).encode())
+            f.write("LOOKUP_TABLE default\n".format(name,
+                    numpy_to_vtk_dtype[values.dtype.name]).encode())
+        elif num_components == 3:
+            f.write("VECTORS {0:s} {1:s}\n".format(name,
+                    numpy_to_vtk_dtype[values.dtype.name]).encode())
+        else:
+            raise WriteError(f"VTK export currently supports only 1 or 3 compoents ('{num_components:n}').")
+
+        if binary:
+            values.astype(values.dtype.newbyteorder(">")).tofile(f, sep="")
+            f.write(b"\n")
+        else:
+            # ascii
+            # values.tofile(f, sep=" ")
+            # np.savetxt(f, points)
+            for v in values:
+                v.tofile(f, sep=" ")
+                f.write(b"\n")
+
+
