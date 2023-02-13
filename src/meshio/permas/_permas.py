@@ -740,10 +740,27 @@ def _write_structure(mesh, offset: int=2) -> str:
     return line
 
 
+# TODO:
+def _write_point_data_result(name, point_data, offet: int=0, point_gids: list=None) -> str:
+    name = name if " " not in name else "'" + name + "'"
+    line = " " * offset + f"$RESULT NAME = {name:s}\n"
+    line += " " * offset + "$END RESULT\n"
+    line += "!\n"
+    return line
+
+
+# TODO:
+def _write_point_data_results(mesh, offet: int=0, point_gids: list=None) -> str:
+    line = ""
+    return line
+
+
 def _write_component(mesh, offset: int=0) -> str:
     line = f"$ENTER COMPONENT NAME = {DFLT_COMP:s}\n"
     line += _write_structure(mesh,  offset + 2)
-    line += "$EXIT COMPONENT\n!\n"
+    # line += _write_results(mesh,  offset + 2)
+    line += "$EXIT COMPONENT\n"
+    line += "!\n"
 
     return line
 
