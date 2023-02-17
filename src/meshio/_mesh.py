@@ -81,6 +81,73 @@ topological_dimension = {
     "VTK_LAGRANGE_PYRAMID": 3,
 }
 
+meshio_analysis = (
+    "unknown",
+    "static",
+    "modal",
+    "modal complex",
+    "transient",
+    "frequency response",
+    "buckling",
+    "nlstatic"
+)
+
+
+meshio_data_types = (
+    "unknown",
+    "stress",
+    "strain",
+    "force",
+    "temperature",
+    "heat flux",
+    "strain energy",
+    "displacement",
+    "reaction",
+    "kinetic energy",
+    "velocity",
+    "acceleration",
+    "strain energy density",
+    "kinetic energy density",
+    "pressure",
+    "heat",
+    "check",
+    "pressure coefficient",
+    "ply stress",
+    "ply strain",
+    "cell scalar",
+    "cell scalar",
+    "reaction heat flow",
+    "stress error density",
+    "stress variation",
+    "shell and plate elem stress resultant",
+    "length",
+    "area",
+    "volume",
+    "mass",
+    "constraint forces",
+    "plastic strain",
+    "creep strain",
+    "strain energy error",
+    "dynamic stress at nodes",
+    "cell unknown",
+    "cell scalar",
+    "cell vector3",
+    "cell vector6",
+    "cell symmetric tensor",
+    "cell global tensor",
+    "cell shell and plate resultant",
+)
+
+meshio_data_characteristic = {
+    "unknown":           ["X"],
+    "scalar":            ["X"],
+    "vector3":           ["X", "Y", "Z"],
+    "vector6":           ["Fx", "Fy", "Fz", "Rx", "Ry", "Rz"],
+    "symmetric tensor":  ["Sxx", "Sxy", "Syy", "Sxz", "Syz", "Szz"],
+    "global tensor":     ["Sxx", "Syx", "Szx", "Sxy", "Syy", "Szy", "Sxz", "Syz", "Szz"],
+    "stress resultant":  ["N", "Qy", "Qz", "Mx", "My", "Mz"],
+}
+
 
 class CellBlock:
     def __init__(
@@ -115,6 +182,331 @@ class CellBlock:
         return len(self.data)
 
 
+class LoadCase:
+    def __init__(self, load_steps: list[LoadStep], analysis: str="static",
+                 load_case: int=101):
+        """
+        load case container
+
+        In:
+            analysis   - analysis type (unknown, static, modal, modal complex,
+                         transient, frequency response, buckling, nlstatic)
+            load_steps - a list of LoadStep containers, will be sorted based
+                         on LoadStep.step property
+            load_case  - load case ID
+        """
+        self.id = load_case
+        self.analysis = analysis
+        self.steps = load_steps
+
+
+    def __len__(self) -> int:
+        return len(self._steps)
+
+
+    def __repr__(self) -> str:
+        lines = ["<meshio loadcase object>",
+                 f"  Analysis type: {self._analysis:s}",
+                 f"  Load case ID: {self._case:n}",
+                 f"  Number of load steps: {self.__len__():n}",
+                 f"  Load value: {self.value:n}",
+                 f"  Number of point data: {len(self.point_data)}",
+                 f"  Number of cell data: {len(self.cell_data)}"]
+        return "\n".join(lines)
+
+
+    def __iter__(self) -> tuple[int, LoadStep]:
+        for lstep in self._steps:
+            yield lstep.step
+
+
+    def __getitem__(self, load_step: int) -> LoadStep:
+        return self._steps[self._stepids[load_step]]
+
+
+    @property
+    def id(self) -> int:
+        return self._id
+
+
+    @id.setter
+    def id(self, step_id: int):
+        self._id = int(step_id)
+
+
+    @property
+    def steps(self) -> list[LoadStep]:
+        return self._steps
+
+
+    @steps.setter
+    def steps(self, load_steps: list[LoadStep]):
+        self._steps = load_steps.sorted(key=lambda lstep: lstep.step)
+        self._stepids = {lstep.id: i for lstep in self._steps}
+
+
+    @property
+    def steps_by_step_id(self) -> list[LoadStep]:
+        return self._steps
+
+
+    @property
+    def steps_by_value(self) -> list[LoadStep]:
+        return self._steps.sorted(key=lambda lstep: lstep.value)
+
+
+    @property
+    def case(self) -> int:
+        return self._case
+
+
+    @case.setter
+    def case(self, load_case: int):
+        self._case = int(load_case)
+
+    @property
+    def analysis(self) -> str:
+        return self._analysis
+
+    @analysis.setter
+    def analysis(self, analysis: str):
+        if analysis not in meshio_analysis:
+            self._analysis = "unknown"
+        else:
+            self._analysis = analysis
+
+
+
+class LoadStep:
+    def __init__(self, point_data: list[Data]=None, cell_data: list[Data]=None,
+                 step_id: int=1, value: [float | complex]= 0.0):
+        """
+        a container of data for one load step, can contain multiple
+        vectors, scalars, tensors...
+
+        In:
+            point_data - a list of all possible scalars, vectors
+                         and such
+            cell_data  - a list of all possible scalars, vectors
+                         and such
+            step_id    - load step ID (e.g. mode shape number,
+                         time step ID for transient analysis,
+                         frequency ID for frequency response, etc.)
+            value      - load step value (e.g. eigenfrequency,
+                         frequency, complex frequency, eigenvalue for
+                         buckling, etc.)
+        """
+        self.point_data = point_data
+        self.cell_data = cell_data
+        self.id = step_id
+        self.value = value
+
+
+    def __repr__(self) -> str:
+        lines = ["<meshio loadstep object>",
+                 f"  Load step ID: {self.id:n}",
+                 f"  Load value: {self.value:n}",
+                 f"  Number of point data: {len(self.point_data)}",
+                 f"  Number of cell data: {len(self.cell_data)}"]
+        return "\n".join(lines)
+
+
+    @property
+    def id(self) -> int:
+        return self._id
+
+
+    @id.setter
+    def id(self, step_id: int):
+        self._id = int(step_id)
+
+
+    @property
+    def value(self) -> [float | complex]:
+        return self._value
+
+
+    @value.setter
+    def value(self, value: [float | complex]):
+        if type(value) is complex:
+            self._value = value
+        else:
+            self._value = float(value)
+
+
+
+class Data:
+    def __init__(self, data: ArrayLike, ids: [list | ArrayLike], data_type: str=None,
+                 data_characteristic: str=None, data_headers: list=None):
+        """
+        result data container
+        In:
+            data                - numpy array of same length as either points or cell,
+                                  depending on the result data
+            ids                 - point or cell ids of data lines
+            data_type           - the type of data, default = unknown (unknown, force,
+                                  temperature, heat flux, strain energy, displacement,
+                                  reaction, kinetic energy, velocity, acceleration,
+                                  strain energy density, kinetic energy density,
+                                  pressure, heat, check, pressure coefficient)
+            data_characteristic - type of values (unknown, scalar, vector, tensor)
+            data_headers        - possible data column names, e.g.
+                                  [sig_xx, sig_yy, sig_zz, sig_xy, sig_yz, sig_xz]
+                                  for stresses, if not specified then guess from
+                                  data_type
+        """
+        self.type = data_type
+        self.character = data_characteristic
+        self.data = data
+        self.headers = headers
+
+
+    def __repr__(self) -> str:
+        lines = ["<meshio data object>",
+                 f"  Data type: {self.type:s}",
+                 f"  Data character: {self.character:s}",
+                 f"  Number of rows: {self.shape[0]:n}",
+                 f"  Number of columns: {self.shape[1]:n}"]
+        return "\n".join(lines)
+
+
+    def __getitem__(self, id: int) -> ArrayLike:
+        return self._data[id,:]
+
+
+    def __iter__(self):
+        return self._data.__iter__
+
+
+    def __len__(self):
+        return self._data.shape[0]
+
+
+    def keys(self):
+        return self.headers.__iter__
+
+
+    def items(self):
+        for i in range(self.columns.count):
+            yield self.headers[i], self._data[:, i]
+
+
+    @property
+    def shape(self) -> tuple:
+        return self._data.shape
+
+
+    @property
+    def columns_count(self) -> int:
+        return self._data.shape[1]
+
+
+    def columns(self) -> ArrayLike:
+        for i in range(self._data.shape[1]):
+            yield self._data[:,i]
+
+
+    def point(self, pointid) -> ArrayLike:
+        return self._data[pointid, :]
+
+
+    def column(self, column: [int | str]) -> ArrayLike:
+        if type(column) is str:
+            return self._data[:, self.headers.index(column)]
+        else:
+            return self._data[:,column]
+
+
+    @property
+    def type(self) -> str:
+        return self._type
+
+
+    @type.setter
+    def type(self, data_type: str=None):
+        """
+        In:
+            data_type           - the type of data, default = unknown (unknown, force,
+                                  temperature, heat flux, strain energy, displacement,
+                                  reaction, kinetic energy, velocity, acceleration,
+                                  strain energy density, kinetic energy density,
+                                  pressure, heat, check, pressure coefficient)
+        """
+        if data_type is None:
+            # data_type = "unknown"
+            self._type = None
+        elif (type(data_type) is not str) or (data_type not in meshio_data_types):
+            self._type = "unknown"
+        else:
+            self._type = data_type
+
+
+    @property
+    def character(self) -> str:
+        return self._character
+
+
+    @character.setter
+    def character(self, characteristic: str=None):
+        """
+        In:
+            data_characteristic - type of values (unknown, scalar, vector, tensor)
+        """
+        if characteristic is None:
+            self._character = None
+        elif ((type(characteristic) is not str)
+            or (characteristic not in meshio_data_characteristic)):
+            self._character = "unknown"
+        else:
+            self._character = characteristic
+
+
+    @property
+    def headers(self) -> list:
+        return self._headers
+
+
+
+    @headers.setter
+    def headers(self, headers: list=None):
+        """
+        In:
+            data_headers        - possible data column names, e.g.
+                                  [sig_xx, sig_yy, sig_zz, sig_xy, sig_yz, sig_xz]
+                                  for stresses
+        """
+        self._headers = headers
+
+
+    @property
+    def data(self) -> ArrayLike:
+        return self._data
+
+
+    @data.setter
+    def data(self, data: ArrayLike):
+        """
+        In:
+            data                - numpy array of same length as either points or cell,
+                                  depending on the result data
+        """
+        if type(data) is np.ndarray:
+            self._data = data
+            if type(data[0,0]) in (complex, np.csingle, np.cdouble):
+                self._valtype = "complex"
+            else:
+                self._valtype = "real"
+        else:
+            self._data = np.array(data, dtype=float)
+            self._valtype = "real"
+        if len(self._data.shape) == 1:
+            self._data = self._data.reshape(self.data.size, -1)
+
+    @property
+    def value_type(self) -> str:
+        return self._valtype
+
+
 class Mesh:
     def __init__(
         self,
@@ -128,6 +520,7 @@ class Mesh:
         gmsh_periodic=None,
         info=None,
         point_gids: dict = None,   # original point ids
+        # load_case: LoadCase = None,  # added load case container
     ):
         self.points = np.asarray(points)
         self.point_gids = point_gids   # point IDs
@@ -245,6 +638,10 @@ class Mesh:
         if self.field_data:
             names = ", ".join(self.field_data.keys())
             lines.append(f"  Field data: {names}")
+
+        # if self.load_case:
+        #     names = ", ".join([str(lc.id) for lc in self.load_case])
+        #     lines.append(f"  Load cases: {names}")
 
         return "\n".join(lines)
 
@@ -448,3 +845,4 @@ class Mesh:
 
         # remove the cell data
         del self.point_data[key]
+
