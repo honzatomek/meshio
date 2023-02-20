@@ -182,329 +182,354 @@ class CellBlock:
         return len(self.data)
 
 
-class LoadCase:
-    def __init__(self, load_steps: list[LoadStep], analysis: str="static",
-                 load_case: int=101):
-        """
-        load case container
-
-        In:
-            analysis   - analysis type (unknown, static, modal, modal complex,
-                         transient, frequency response, buckling, nlstatic)
-            load_steps - a list of LoadStep containers, will be sorted based
-                         on LoadStep.step property
-            load_case  - load case ID
-        """
-        self.id = load_case
-        self.analysis = analysis
-        self.steps = load_steps
-
-
-    def __len__(self) -> int:
-        return len(self._steps)
-
-
-    def __repr__(self) -> str:
-        lines = ["<meshio loadcase object>",
-                 f"  Analysis type: {self._analysis:s}",
-                 f"  Load case ID: {self._case:n}",
-                 f"  Number of load steps: {self.__len__():n}",
-                 f"  Load value: {self.value:n}",
-                 f"  Number of point data: {len(self.point_data)}",
-                 f"  Number of cell data: {len(self.cell_data)}"]
-        return "\n".join(lines)
-
-
-    def __iter__(self) -> tuple[int, LoadStep]:
-        for lstep in self._steps:
-            yield lstep.step
-
-
-    def __getitem__(self, load_step: int) -> LoadStep:
-        return self._steps[self._stepids[load_step]]
-
+class ID:
+    def __init__(self, id: int):
+        self.id = id
 
     @property
     def id(self) -> int:
         return self._id
 
-
     @id.setter
-    def id(self, step_id: int):
-        self._id = int(step_id)
+    def id(self, id: int):
+        self._id = int(id)
 
 
-    @property
-    def steps(self) -> list[LoadStep]:
-        return self._steps
+class Analysis:
+    def __init__(self, point_data: dict, value_count: int):
+        self._loadcases = []
+        self._loadcase_ids = []
+        self.value_count = value_count
+        self.loadcases = point_data
+        self.analysis = point_data
 
+    def __getitem__(self, load_case_id: int):
+        return self.loadcases[self.loadcaseIDs.index(load_case_id)]
 
-    @steps.setter
-    def steps(self, load_steps: list[LoadStep]):
-        self._steps = load_steps.sorted(key=lambda lstep: lstep.step)
-        self._stepids = {lstep.id: i for lstep in self._steps}
+    def __iter__(self):
+        return self.loadcases.__iter__
 
+    def keys(self) -> int:
+        for i in range(len(self._loadcase_ids)):
+            yield self._loadcase_ids[i]
 
-    @property
-    def steps_by_step_id(self) -> list[LoadStep]:
-        return self._steps
+    def items(self) -> tuple:
+        for i in range(len(self._loadcase_ids)):
+            yield (self._loadcase_ids[i], self._loadcases[i])
 
+    def values(self) -> LoadCase:
+        for i in range(len(self._loadcase_ids)):
+            yield self._loadcases[i]
 
-    @property
-    def steps_by_value(self) -> list[LoadStep]:
-        return self._steps.sorted(key=lambda lstep: lstep.value)
+    def as_dict(self) -> dict:
+        data = {}
+        for lcid, lcase in self.items():
+            name = self.analysis.replace(" ", "_") + "-" + f"{lcid:05n}"
+            for lsid, lstep in lcase.items():
+                name += f"-{lsid:05n}({lstep.value:f})"
+                for dtname, dataset in lstep.items():
+                    name += f"-{dtname:s}"
+                    data[name] = dataset.data.as_array()
+        return data
 
-
-    @property
-    def case(self) -> int:
-        return self._case
-
-
-    @case.setter
-    def case(self, load_case: int):
-        self._case = int(load_case)
+    def as_iter(self) -> tuple[str, ArrayLike]:
+        for lcid, lcase in self.items():
+            for lsid, lstep in lcase.items():
+                for dtname, dataset in lstep.items():
+                    yield (
+                        self.analysis, lcid, lsid, dataset.character,
+                        dataset.type, dataset.as_array()
+                    )
 
     @property
     def analysis(self) -> str:
         return self._analysis
 
     @analysis.setter
-    def analysis(self, analysis: str):
-        if analysis not in meshio_analysis:
-            self._analysis = "unknown"
-        else:
+    def analysis(self, analysis: [str, dict]):
+        if type(analysis) is dict and "analysis" in analysis.keys():
+            analysis = analysis["analysis"]
+        if analysis in meshio_analysis:
             self._analysis = analysis
-
-
-
-class LoadStep:
-    def __init__(self, point_data: list[Data]=None, cell_data: list[Data]=None,
-                 step_id: int=1, value: [float | complex]= 0.0):
-        """
-        a container of data for one load step, can contain multiple
-        vectors, scalars, tensors...
-
-        In:
-            point_data - a list of all possible scalars, vectors
-                         and such
-            cell_data  - a list of all possible scalars, vectors
-                         and such
-            step_id    - load step ID (e.g. mode shape number,
-                         time step ID for transient analysis,
-                         frequency ID for frequency response, etc.)
-            value      - load step value (e.g. eigenfrequency,
-                         frequency, complex frequency, eigenvalue for
-                         buckling, etc.)
-        """
-        self.point_data = point_data
-        self.cell_data = cell_data
-        self.id = step_id
-        self.value = value
-
-
-    def __repr__(self) -> str:
-        lines = ["<meshio loadstep object>",
-                 f"  Load step ID: {self.id:n}",
-                 f"  Load value: {self.value:n}",
-                 f"  Number of point data: {len(self.point_data)}",
-                 f"  Number of cell data: {len(self.cell_data)}"]
-        return "\n".join(lines)
-
+        else:
+            warn(f"Unknown type of analysis {analysis:s}, setting it to 'unknown'.")
+            self._analysis = "unknown"
 
     @property
-    def id(self) -> int:
-        return self._id
+    def loadcases(self) -> list:
+        return self._loadcases
+
+    @property
+    def loadcaseIDs(self) -> list:
+        return self._loadcase_ids
+
+    @loadcases.setter
+    def loadcases(self, point_data: dict):
+        """
+        !!! Only for POINT DATA !!!
+
+        -> point_data[load case][load step][data type][data] = [..., ..., ...]
+        -> point_data: analysis: analysis type - str
+                       load case 1: load case ID - (int, dict)
+                       load case 2: load case ID - (int, dict)
+
+        -> load case 1: load step 1 - (int, dict)
+                        load step 2 - (int, dict)
+
+        -> load step 1: value       - float (e.g. time, eigenfrequency etc.)
+                        data type 1 - (str, dict) - (e.g. stress, strain, force)
+                        data type 2 - (str, dict)
+
+        -> data type 1: data character - str - (e.g scalar, vector3, tensor)
+                        value type     - str - (e.g. integer, sp real, dp complex, ...)
+                        gids           - list - original Node IDs
+                        data           - np.ndarray(value type) - values
+
+        """
+        lcases = [k for k in point_data.keys() if k != "analysis"]
+        for lcase in lcases:
+            self._loadcase_ids.append(lcase)
+            self._loadcases.append(LoadCase(lcase, point_data[lcase], self.value_count))
+
+        # sort by loadcase id
+        self._loadcase_ids = sorted(self._loadcase_ids)
+        self._loadcases = sorted(self._loadcases, key=lambda x: x.id)
 
 
-    @id.setter
-    def id(self, step_id: int):
-        self._id = int(step_id)
+class LoadCase(ID):
+    def __init__(self, load_case_id: int, load_steps: dict, value_count: int):
+        super().__init__(load_case_id)
+        self._loadsteps = []
+        self._loadstep_ids = []
+        self.loadsteps = load_steps
 
+    @property
+    def loadsteps(self) -> list:
+        return self.loadsteps
+
+    @loadsteps.setter
+    def loadsteps(self, loadsteps: dict):
+        for ls in loadsteps.keys():
+            self._loadstep_ids.append(ls)
+            lss = {dt: loadstep for dt, loadstep in loadsteps[ls].items() if dt != "value"}
+            self._loadsteps.append(LoadStep(ls, lss, self.value_count, loadsteps[ls]["value"]))
+
+        # sort by loadstep.id, just in case
+        self._loadstep_ids = sorted(self._loadstep_ids)
+        self._loadsteps = sorted(self._loadsteps, key=lambda x: x.id)
+
+    @property
+    def loadstepIDs(self) -> list:
+        return self._loadstep_ids
+
+    def __getitem__(self, id: [int, float]) -> LoadStep:
+        if type(id) is int:
+            return self.loadsteps[self.loadstepIDs.index(id)]
+        else:
+            for ls in self.loadsteps:
+                if ls.value == id:
+                    return ls
+
+    def __iter__(self) -> LoadStep:
+        for ls in self.loadsteps:
+            yield ls
+
+    def keys(self) -> list:
+        return self.loadstepIDs
+
+    def items(self) -> tuple:
+        for i in range(len(self.loadsteps)):
+            yield self._loadstep_ids[i], self._loadsteps[i]
+
+    def values(self) -> LoadStep:
+        for i in range(len(self.loadsteps)):
+            yield self._loadsteps[i]
+
+
+class LoadStep(ID):
+    def __init__(self, load_step_id: int, results: dict, value_count: int,
+                 load_step_value: [float, complex] = 0.0):
+        super().__init__(load_step_id)
+        self._value_count = value_count
+        self.value = load_step_value
+        self._results = []
+        self._result_types = []
+        self.results = results
+
+    def __getitem__(self, result_type) -> Data:
+        return self.results[self.result_types.index(result_type)]
+
+    def __repr__(self) -> str:
+        lines = ["<meshio LoadStep object>",
+                 f"  Load Step ID: {self.id:n}",
+                 f"  Load Step Value: {self.value:n}",
+                 f"  Number of results: {len(self.results):n}"]
+        for result in self.results:
+            lines.append(("  " + result.replace("\n", "\n  ")).split("\n"))
+        return "\n".join(lines)
+
+    def keys(self) -> list:
+        return self.result_types.__iter__
+
+    def items(self) -> tuple:
+        for i in range(len(self.results)):
+            yield (self.result_types[i], self.results[i])
+
+    def values(self) -> list:
+        for i in range(len(self.results)):
+            yield self.results[i]
 
     @property
     def value(self) -> [float | complex]:
         return self._value
 
-
     @value.setter
-    def value(self, value: [float | complex]):
-        if type(value) is complex:
-            self._value = value
-        else:
-            self._value = float(value)
+    def value(self, load_step_value: [float, complex]):
+        self._value = load_step_value
+
+    @property
+    def results(self) -> list:
+        return self._results
+
+    @results.setter
+    def results(self, results: dict):
+        for key, item in results.items():
+            self._results.append(PointData(key, item["data"], self._value_count,
+                                           item["gids"]))
+            self._result_types.append(key)
+            if "character" in item.keys():
+                self._results[-1].character = item["character"]
+
+    @property
+    def result_types(self) -> list:
+        return self._result_types
 
 
-
-class Data:
-    def __init__(self, data: ArrayLike, ids: [list | ArrayLike], data_type: str=None,
-                 data_characteristic: str=None, data_headers: list=None):
-        """
-        result data container
-        In:
-            data                - numpy array of same length as either points or cell,
-                                  depending on the result data
-            ids                 - point or cell ids of data lines
-            data_type           - the type of data, default = unknown (unknown, force,
-                                  temperature, heat flux, strain energy, displacement,
-                                  reaction, kinetic energy, velocity, acceleration,
-                                  strain energy density, kinetic energy density,
-                                  pressure, heat, check, pressure coefficient)
-            data_characteristic - type of values (unknown, scalar, vector, tensor)
-            data_headers        - possible data column names, e.g.
-                                  [sig_xx, sig_yy, sig_zz, sig_xy, sig_yz, sig_xz]
-                                  for stresses, if not specified then guess from
-                                  data_type
-        """
+class PointData:
+    def __init__(self, data_type: str, point_data: [ArrayLike], point_count: int,
+                 gids: list=None, character: str = "unknown"):
+        self._count = point_count
         self.type = data_type
-        self.character = data_characteristic
-        self.data = data
-        self.headers = headers
+        self.gids = gids
+        self.data = point_data
+        self.character = character
 
+    def __getitem__(self, point_id: int) -> ArrayLike:
+        """
+        Item getter that returns value if point_id is in gids, otherwise
+        returns a vector of zeros the same size as other data
 
-    def __repr__(self) -> str:
-        lines = ["<meshio data object>",
-                 f"  Data type: {self.type:s}",
-                 f"  Data character: {self.character:s}",
-                 f"  Number of rows: {self.shape[0]:n}",
-                 f"  Number of columns: {self.shape[1]:n}"]
-        return "\n".join(lines)
-
-
-    def __getitem__(self, id: int) -> ArrayLike:
-        return self._data[id,:]
-
-
-    def __iter__(self):
-        return self._data.__iter__
-
+        This way zeroes need not be stored in memory.
+        """
+        if self.gids is not None:
+            if point_id in self.gids:
+                return self._data[self.gids.index(point_id),:]
+            else:
+                return np.array([0.] * self._data.shape[1], dtype=self._data.dtype)
+        else:
+            return self._data[point_id]
 
     def __len__(self):
-        return self._data.shape[0]
+        return self._count
 
+    def __repr__(self) -> str:
+        lines = ["<meshio Data object>",
+                 f"  Data type: {self.type:s}",
+                 f"  Data character: {self.character:s}",
+                 f"  Data shape: {self.shape[0]:n}, {self.shape[1]:n}"]
+        return "\n".join(lines)
+
+    @property
+    def count(self) -> int:
+        return self._count
 
     def keys(self):
-        return self.headers.__iter__
-
+        return self.gids
 
     def items(self):
-        for i in range(self.columns.count):
-            yield self.headers[i], self._data[:, i]
+        if self.gids is not None:
+            for i in range(len(self.gids)):
+                yield (self.gids[i], self.data[i, :])
+        else:
+            for i in range(len(self.data)):
+                yield (i, self.data[i, :])
 
+    def values(self):
+        return self.data.__iter__
+
+    def as_array(self, num_points: int=None):
+        if self.gids is None:
+            return self.data
+        else:
+            data = []
+            vals = self._data.shape[1]
+            for i in range(self.count):
+                if i in self.gids.keys():
+                    data.append(self._data[i,:])
+                else:
+                    data.append([0.] * vals)
+            data = np.array(data, dtype = self._data.dtype)
+            return data
 
     @property
     def shape(self) -> tuple:
-        return self._data.shape
-
-
-    @property
-    def columns_count(self) -> int:
-        return self._data.shape[1]
-
-
-    def columns(self) -> ArrayLike:
-        for i in range(self._data.shape[1]):
-            yield self._data[:,i]
-
-
-    def point(self, pointid) -> ArrayLike:
-        return self._data[pointid, :]
-
-
-    def column(self, column: [int | str]) -> ArrayLike:
-        if type(column) is str:
-            return self._data[:, self.headers.index(column)]
-        else:
-            return self._data[:,column]
-
+        return self.data.shape
 
     @property
     def type(self) -> str:
         return self._type
 
-
     @type.setter
-    def type(self, data_type: str=None):
-        """
-        In:
-            data_type           - the type of data, default = unknown (unknown, force,
-                                  temperature, heat flux, strain energy, displacement,
-                                  reaction, kinetic energy, velocity, acceleration,
-                                  strain energy density, kinetic energy density,
-                                  pressure, heat, check, pressure coefficient)
-        """
-        if data_type is None:
-            # data_type = "unknown"
-            self._type = None
-        elif (type(data_type) is not str) or (data_type not in meshio_data_types):
-            self._type = "unknown"
-        else:
-            self._type = data_type
-
+    def type(self, data_type: str):
+        self._type = data_type
 
     @property
-    def character(self) -> str:
-        return self._character
+    def gids(self) -> list:
+        return self._gids
 
-
-    @character.setter
-    def character(self, characteristic: str=None):
-        """
-        In:
-            data_characteristic - type of values (unknown, scalar, vector, tensor)
-        """
-        if characteristic is None:
-            self._character = None
-        elif ((type(characteristic) is not str)
-            or (characteristic not in meshio_data_characteristic)):
-            self._character = "unknown"
+    @gids.setter
+    def gids(self, gids: list):
+        if gids is None:
+            self._gids = None
         else:
-            self._character = characteristic
-
-
-    @property
-    def headers(self) -> list:
-        return self._headers
-
-
-
-    @headers.setter
-    def headers(self, headers: list=None):
-        """
-        In:
-            data_headers        - possible data column names, e.g.
-                                  [sig_xx, sig_yy, sig_zz, sig_xy, sig_yz, sig_xz]
-                                  for stresses
-        """
-        self._headers = headers
-
+            self._gids = list(gids)
 
     @property
     def data(self) -> ArrayLike:
         return self._data
 
-
     @data.setter
-    def data(self, data: ArrayLike):
-        """
-        In:
-            data                - numpy array of same length as either points or cell,
-                                  depending on the result data
-        """
-        if type(data) is np.ndarray:
-            self._data = data
-            if type(data[0,0]) in (complex, np.csingle, np.cdouble):
-                self._valtype = "complex"
-            else:
-                self._valtype = "real"
-        else:
-            self._data = np.array(data, dtype=float)
-            self._valtype = "real"
-        if len(self._data.shape) == 1:
-            self._data = self._data.reshape(self.data.size, -1)
+    def data(self, point_data: ArrayLike):
+        self._data = np.asarray(point_data)
+        if self.gids is None:
+            self._count = self._data.shape[0]
 
     @property
-    def value_type(self) -> str:
-        return self._valtype
+    def character(self) -> str:
+        return self._character
+
+    @character.setter
+    def character(self, character: str):
+        if character not in meshio_data_characteristic.keys():
+            self._character = "unknown"
+        else:
+            self._character = character
+
+        if self._character != "unknown":
+            colcnt = len(meshio_data_characteristic[self._character])
+            if self._data.shape[1] != colcnt:
+                warn(f"Point data character {self._character:s} does not match "
+                     f"point data columns count ({colcnt:n} != {self._data.shape[1]:n}), "
+                      "setting data character to 'unknown'.")
+                self._character = "unknown"
+
+    @property
+    def columns(self) -> list:
+        cols = meshio_data_characteristic[self.character]
+        if self.character == "unknown":
+            return [cols[0] + "f{i+1:n}" for i in range(self._data.shape[1])]
+        else:
+            return cols
 
 
 class Mesh:
@@ -548,7 +573,8 @@ class Mesh:
                 )
             self.cells.append(cell_block)
 
-        self.point_data = {} if point_data is None else point_data
+        # self.point_data = {} if point_data is None else point_data
+        self.point_data = point_data
         self.cell_data = {} if cell_data is None else cell_data
         self.field_data = {} if field_data is None else field_data
         self.point_sets = {} if point_sets is None else point_sets
@@ -568,14 +594,14 @@ class Mesh:
         #                                     "values":      np.array}
         #                         }
         # the same should apply to cell data and field data
-        for key, item in self.point_data.items():
-            if not type(item) is dict: # keep legacy, add new
-                self.point_data[key] = np.asarray(item)
-                if len(self.point_data[key]) != len(self.points):
-                    raise ValueError(
-                        f"len(points) = {len(self.points)}, "
-                        f'but len(point_data["{key}"]) = {len(self.point_data[key])}'
-                    )
+        # for key, item in self.point_data.items():
+        #     if not type(item) is dict: # keep legacy, add new
+        #         self.point_data[key] = np.asarray(item)
+        #         if len(self.point_data[key]) != len(self.points):
+        #             raise ValueError(
+        #                 f"len(points) = {len(self.points)}, "
+        #                 f'but len(point_data["{key}"]) = {len(self.point_data[key])}'
+        #             )
 
         # assert cell data consistency and convert to numpy arrays
         for key, data in self.cell_data.items():
@@ -639,10 +665,6 @@ class Mesh:
             names = ", ".join(self.field_data.keys())
             lines.append(f"  Field data: {names}")
 
-        # if self.load_case:
-        #     names = ", ".join([str(lc.id) for lc in self.load_case])
-        #     lines.append(f"  Load cases: {names}")
-
         return "\n".join(lines)
 
     def copy(self):
@@ -677,7 +699,7 @@ class Mesh:
         return cells_dict
 
     @property
-    def cells_dict_paraview(self):
+    def cells_dict_paraview(self) -> dict:
         cells_dict = {}
         for cell_block in self.cells:
             if cell_block.type not in cells_dict:
@@ -729,6 +751,57 @@ class Mesh:
             }
             for key, sets in sets_dict.items()
         }
+
+    @property
+    def point_data(self) -> dict:
+        return self._point_data
+
+    @point_data.setter
+    def point_data(self, point_data: dict):
+        """
+        -> analysis[load case][load step][data type][data] = [..., ..., ...]
+        -> analysis: analysis: analysis type - str
+                     load case 1: load case ID - (int, dict)
+                     load case 2: load case ID - (int, dict)
+
+        -> load case 1: load step 1 - (int, dict)
+                        load step 2 - (int, dict)
+
+        -> load step 1: value       - float (e.g. time, eigenfrequency etc.)
+                        data type 1 - (str, dict) - (e.g. stress, strain, force)
+                        data type 2 - (str, dict)
+
+        -> data type 1: data character - str - (e.g scalar, vector3, tensor)
+                        value type     - str - (e.g. integer, sp real, dp complex, ...)
+                        gids           - list - original Node IDs
+                        data           - np.ndarray(value type) - values
+
+        """
+        if point_data is None:
+            point_data = {}
+        elif type(point_data) is Analysis:
+            pass
+        else:
+            for key, item in point_data.items():
+                if not type(item) is dict: # keep legacy, add new
+                    point_data[key] = np.asarray(item)
+                    if len(point_data[key]) != len(self.points):
+                        raise ValueError(
+                            f"len(points) = {len(self.points)}, "
+                            f'but len(point_data["{key}"]) = {len(point_data[key])}'
+                        )
+                else:
+                    point_data = Analysis(point_data)
+                    break
+        self._point_data = point_data
+
+    @property
+    def point_data_load_cases(self) -> list:
+        return list(self.point_data.keys())
+
+    def point_data_load_steps(self, load_case: int) -> dict:
+        return list([k for k in self.point_data[load_case].keys() if k != "analysis"])
+
 
     @classmethod
     def read(cls, path_or_buf, file_format=None):

@@ -10,7 +10,7 @@ try:
     from .._exceptions import ReadError
     from .._files import open_file
     from .._helpers import register_format
-    from .._mesh import CellBlock, Mesh, LoadCase, LoadStep, Data
+    from .._mesh import CellBlock, Mesh
 
 except ImportError as e:
     import os
@@ -51,10 +51,10 @@ FMT_STR = lambda x: _FMT_STR.format(x).rstrip()       # string
 
 
 unv_to_meshio_dataset = {
-    15: "NODE1P",
-  2411: "NODE2P",
-  2412: "ELEMENT",
-    55: "NODAL DATA",
+    15: "point",
+  2411: "point", # default
+  2412: "cell",
+    55: "point data",
 }
 meshio_to_unv_dataset = {v: k for k, v in unv_to_meshio_dataset.items()}
 
@@ -247,17 +247,17 @@ def read_buffer(f):
 
         dataset = int(line.strip())              # dataset number
         if dataset in unv_to_meshio_dataset.keys():  # known dataset number
-            if unv_to_meshio_dataset[dataset] == "NODE1P":
+            if dataset == 15:                    # single precision node
                 _points, _point_gids = _read_sp_nodes(f)
                 points.extend(_points)
                 point_gids.extend(_point_gids)
 
-            elif unv_to_meshio_dataset[dataset] == "NODE2P":
+            elif dataset == 2411:                # double precision node
                 _points, _point_gids = _read_dp_nodes(f)
                 points.extend(_points)
                 point_gids.extend(_point_gids)
 
-            elif unv_to_meshio_dataset[dataset] == "ELEMENT":
+            elif dataset == 2412:                # elements
                 _cells, _cell_gids = _read_cells(f)
                 for cell_type in _cells.keys():
                     if cell_type not in cells.keys():
@@ -267,7 +267,7 @@ def read_buffer(f):
                     cell_gids[cell_type].extend(_cell_gids[cell_type])
 
             # TODO:
-            elif unv_to_meshio_dataset[dataset] == "NODAL DATA":
+            elif dataset == 55:                 # nodal data
                 point_data = _update_dict_of_dicts(point_data, _read_point_data(f))
 
         # too many datasets to specifically skip them
@@ -294,13 +294,13 @@ def read_buffer(f):
     cells = [CellBlock(etype, np.array(cells[etype], dtype=np.int32),
                        cell_gids=cell_gids[etype]) for etype in cells.keys()]
 
+    # TODO:
     point_data = _process_point_data(point_data, point_gids)
 
-    if read_point_data:
-        return Mesh(
-            points, cells, point_data=point_data, cell_data=cell_data, field_data=field_data,
-            point_sets=nsets, cell_sets=elsets, point_gids=point_gids
-        )
+    return Mesh(
+        points, cells, point_data=point_data, cell_data=cell_data, field_data=field_data,
+        point_sets=nsets, cell_sets=elsets, point_gids=point_gids
+    )
 
 
 def _read_sp_nodes(f):
@@ -491,75 +491,20 @@ def _update_dict_of_dicts(base: dict, data: dict) -> dict:
     return base
 
 
-def read_point_data(f):
-    points = []
-    # Initialize the optional data fields
-    point_gids = []
-    point_data = {}
-
-    while True:
-        last_pos = f.tell()
-        line = f.readline().strip("\n")
-        if not line:          # EOF
-            break
-        if line != DELIMITER: # comments
-            continue
-        last_pos = f.tell()   # in dataset, read next line = dataset number
-        line = f.readline().strip("\n")
-        if not line:          # EOF
-            break
-
-        dataset = int(line.strip())              # dataset number
-        if dataset in unv_to_meshio_dataset.keys():  # known dataset number
-            # read points to get their IDs
-            if unv_to_meshio_dataset[dataset] == "NODE1P":
-                _points, _point_gids = _read_sp_nodes(f)
-                points.extend(_points)
-                point_gids.extend(_point_gids)
-
-            # read points to get their IDs
-            elif unv_to_meshio_dataset[dataset] == "NODE2P":
-                _points, _point_gids = _read_dp_nodes(f)
-                points.extend(_points)
-                point_gids.extend(_point_gids)
-
-            # TODO:
-            elif unv_to_meshio_dataset[dataset] == "NODAL DATA":
-                point_data = _update_dict_of_dicts(point_data, _read_point_data(f))
-
-        # too many datasets to specifically skip them
-        else:
-            _read_dataset(f)
-
-    # prepare point gids
-    point_gids = {point_gids[i]: i for i in range(len(point_gids.keys()))}
-
-    point_data = _process_point_data(point_data, point_gids)
-
-    return point_data
-
-
 def _process_point_data(point_data: dict, point_gids: dict):
     # TODO:
     # renumber point_data according to point_gids
-    for lcase in point_data.keys():
-        for lstep in point_data[lcase].keys():
-            data_gids = point_data[lcase][lstep]["gids"]
-            data_gids = {data_gids[i]: i for i in range(len(data_gids))}
-            # insert zero values to points that were not written in dataset 55
-            # and order point data the same as points
-            values = point_data[lcase][lstep]["values"]
-            numvals = values.shape[1]
-            data = []
-            for gid in point_gids.keys():
-                if gid in data_gids.keys():
-                    data.append(values[data_gids[gid]])
-                else:
-                    data.append([0.] * numvals)
-            data = np.array(data, dtype=np.float64)
-            point_data[lcase][lstep]["values"] = data
-            point_data[lcase][lstep]["gids"] = np.array(list(point_gids.keys()), dtype=np.int32)
-
+    for lc in point_data.keys():
+        loadsteps = point_data[lc]
+        for ls in [k for k in loadsteps.keys() if k != "analysis"]:
+            loadstep = loadsteps[ls]
+            for dt in [k for k in loadstep.keys() if k != "value"]:
+                data_type = loadstep[dt]
+                gids = [point_gids[gid] for gid in data_type["gids"]]
+                point_data[lc][ls][dt]["gids"] = np.array(gids, dtype=int)
+                # TODO:
+                # point data for a point, that is not specified is implied to
+                # be zero
     return point_data
 
 
@@ -579,7 +524,7 @@ def _read_point_data(f) -> dict:
     data_char = header["data character"]
 
     # TODO:
-    point_data = {"data character": data_char,          # scalar, vector3, tensor, ..
+    point_data = {"character": data_char,               # scalar, vector3, tensor, ..
                   "value type": header["value type"],   # not necessary, can be inferred
                   "gids": gids,                         # original node IDs -> renumbering
                   "data": values}                       # values
@@ -812,7 +757,7 @@ def _write_sp_nodes(points: np.ndarray, node_gids: dict=None) -> str:
     color = 1
 
     dataset = DELIMITER + "\n"
-    dataset += FMT_DTS(meshio_to_unv_dataset["NODE1P"]) + "\n"
+    dataset += FMT_DTS(15) + "\n"
 
     for i, coor in enumerate(points):
         if node_gids is not None:
@@ -832,7 +777,7 @@ def _write_dp_nodes(points: np.ndarray, node_gids: dict=None) -> str:
     color = 1
 
     dataset = DELIMITER + "\n"
-    dataset += FMT_DTS(meshio_to_unv_dataset["NODE2P"]) + "\n"
+    dataset += FMT_DTS(meshio_to_unv_dataset["point"]) + "\n"
 
     for i, coor in enumerate(points):
         if node_gids is not None:
@@ -867,7 +812,7 @@ def _write_elements(cells: list, node_gids: dict = None) -> str:
     color = 1
 
     dataset = DELIMITER + "\n"
-    dataset += FMT_DTS(meshio_to_unv_dataset['ELEMENT']) + "\n"
+    dataset += FMT_DTS(meshio_to_unv_dataset["cell"]) + "\n"
 
     cid = 0
     for i, cell_block in enumerate(cells):
@@ -990,7 +935,7 @@ def _write_nodal_data(point_data: np.ndarray, header: dict, point_gids: dict=Non
     return dataset
 
 
-def _write_point_data(point_data: [np.ndarray | LoadCase],
+def _write_point_data(point_data: np.ndarray,
                       point_gids: list=None,
                       header: dict=None) -> str:
     datasets = ""

@@ -4,12 +4,13 @@ I/O for VTK <https://vtk.org/wp-content/uploads/2015/04/file-formats.pdf>.
 from functools import reduce
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from ..__about__ import __version__
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
-from .._mesh import Mesh
+from .._mesh import Mesh, Analysis, LoadCase, LoadStep, PointData
 from .._vtk_common import (
     Info,
     meshio_to_vtk_order,
@@ -642,17 +643,23 @@ def write(filename, mesh, binary=True):
         _write_points(f, points, binary)
         _write_cells(f, mesh.cells, binary)
 
+        # write point data (point gids as fields, etc.)
+        # _write_point_data(f, points, point_data, binary)
+        _write_point_data(f, mesh, binary)
+
         # write point data
-        if mesh.point_data:
-            num_points = mesh.points.shape[0]
-            # _write_field_data(f, mesh.point_data, binary)
-            _write_data(f, mesh.point_data, binary)
+        # if mesh.point_data:
+        #     # num_points = mesh.points.shape[0]
+        #     # _write_field_data(f, mesh.point_data, binary)
+        #     # _write_data(f, mesh.point_data, binary)
+        #     _write_point_data(f, mesh, binary)
 
         # write cell data
+        # TODO:
         if mesh.cell_data:
             total_num_cells = sum(len(c.data) for c in mesh.cells)
             f.write(f"CELL_DATA {total_num_cells}\n".encode())
-            _write_field_data(f, mesh.cell_data, binary)
+            __write_field_data(f, "FieldData", mesh.cell_data, binary)
 
 
 def _write_points(f, points, binary):
@@ -735,8 +742,8 @@ def _write_cells(f, cells, binary):
             f.write(b"\n")
 
 
-def _write_field_data(f, data, binary):
-    f.write((f"FIELD FieldData {len(data)}\n").encode())
+def __write_field_data(f, name: str, data, binary):
+    f.write((f"FIELD {name:s} {len(data)}\n").encode())
     for name, values in data.items():
         if isinstance(values, list):
             values = np.concatenate(values)
@@ -771,6 +778,7 @@ def _write_field_data(f, data, binary):
 
 def _write_data(f, data, binary):
     # f.write((f"FIELD FieldData {len(data)}\n").encode())
+    num_points = len(data)
     f.write(f"POINT_DATA {num_points}\n".encode())
     for name, values in data.items():
         if isinstance(values, list):
@@ -786,15 +794,21 @@ def _write_data(f, data, binary):
             raise WriteError(f"VTK doesn't support spaces in field names ('{name}').")
 
         if num_components == 1:
-            f.write("SCALARS {0:s} {1:s}\n".format(name,
+            # f.write("SCALARS {0:s} {1:s}\n".format(name,
+            #         numpy_to_vtk_dtype[values.dtype.name]).encode())
+            # f.write("LOOKUP_TABLE default\n".format(name,
+            #         numpy_to_vtk_dtype[values.dtype.name]).encode())
+            f.write("FIELD {0:s} {1:n}\n".format(name, 1))
+            f.write("{0:s} {1:n} {2:n} {3:s}\n".format(name, num_components, num_tuples,
                     numpy_to_vtk_dtype[values.dtype.name]).encode())
-            f.write("LOOKUP_TABLE default\n".format(name,
-                    numpy_to_vtk_dtype[values.dtype.name]).encode())
-        elif num_components == 3:
-            f.write("VECTORS {0:s} {1:s}\n".format(name,
-                    numpy_to_vtk_dtype[values.dtype.name]).encode())
+        # elif num_components == 3:
+        #     f.write("VECTORS {0:s} {1:s}\n".format(name,
+        #             numpy_to_vtk_dtype[values.dtype.name]).encode())
+        # elif num_components == 6:
+        #     f.write("VECTORS {0:s} {1:s}\n".format(name,
+        #             numpy_to_vtk_dtype[values.dtype.name]).encode())
         else:
-            raise WriteError(f"VTK export currently supports only 1 or 3 compoents ('{num_components:n}').")
+            raise WriteError(f"VTK export currently supports only 1, 3 or 6 compoents ('{num_components:n}').")
 
         if binary:
             values.astype(values.dtype.newbyteorder(">")).tofile(f, sep="")
@@ -808,3 +822,107 @@ def _write_data(f, data, binary):
                 f.write(b"\n")
 
 
+def _write_point_data(f, mesh: Mesh, binary: bool=True):
+    num_points = mesh.points.shape[0]
+    point_gids = mesh.point_gids
+    data = mesh.point_data
+    f.write(f"POINT_DATA {num_points}\n".encode())
+
+    # write node IDs if possible
+    if point_gids is not None:
+        pids = {"NodeIDs": np.array(list(point_gids.values()), dtype=int).reshape(-1, 1)}
+        _write_field_data(f, "NodeIDs", pids, binary)
+
+    # keep legacy
+    if type(data) is dict:
+        __write_field_data(f, "FieldData", data, binary)
+
+    else:
+        # separate results into field data, vectors, tensors
+        field = {}
+        vector = {}
+        tensor = {}
+        for analysis, lcase, lstep, char, dtype, value in data.as_iter():
+            name = (f"{analysis.replace(' ', '_'):s}-{lcase:05n}-{lstep:05n}" +
+                    f"-{dtype.replace(' ', '_'):s}")
+            if dtype in ("unknown", "scalar"):
+                field[name] = value
+            elif dtype in ("symmetric tensor", "global tensor"):
+                tensor[name] = value
+            else:
+                vector[name] = value
+
+        if len(list(field.keys())) > 0:
+            _write_field_data(f, "FieldData", field, binary)
+
+        for key, value in vector.items():
+            _write_vector_data(f, key, value, binary)
+
+        for key, value in tensor.items():
+            _write_tensor_data(f, key, value, binary)
+
+
+def _write_field_data(f, name: str, data: dict, binary: bool=True):
+    num_fields = len(data.keys())
+    f.write(f"FIELD {name:s} {num_fields:n}\n".encode())
+    for key, array in data.items():
+        _write_field_data_array(f, key, array, binary)
+
+
+def _write_field_data_array(f, name, data, binary=True):
+    num_components = data.shape[1]
+    num_tuples = data.shape[0]
+    dataType = numpy_to_vtk_dtype[data.dtype.name]
+    f.write(f"{name:s} {num_components:n} {num_tuples:n} {dataType:s}\n".encode())
+    if binary:
+        for values in data:
+            values.astype(values.dtype.newbyteorder(">")).tofile(f, sep="")
+            f.write(b"\n")
+    else:
+        for values in data:
+            values.tofile(f, sep=" ")
+            f.write(b"\n")
+
+def _write_vector_data(f, name, data, binary=True):
+    dataType = numpy_to_vtk_dtype[data.dtype.name]
+    if data.shape[1] == 3:
+        vectorname = [name]
+        vectors = [data]
+    else:
+        vectorname = [name + "-T", name + "-R"]
+        vectors = [data[:,:3], data[:,3:]]
+
+    for i in range(len(vectors)):
+        f.write(f"VECTORS {vectorname[i]:s} {dataType:s}\n".encode())
+        if binary:
+            for values in vectors[i]:
+                values.astype(values.dtype.newbyteorder(">")).tofile(f, sep="")
+                f.write(b"\n")
+        else:
+            for values in vectors[i]:
+                values.tofile(f, sep=" ")
+                f.write(b"\n")
+
+def _write_tensor_data(f, name, data, binary=True):
+    dataType = numpy_to_vtk_dtype[data.dtype.name]
+    if data.shape[1] == 6:
+        tensor = "symmetric"
+    else:
+        tensor = "global"
+    f.write(f"TENSORS {name:s} {dataType:s}\n".encode())
+    for values in data:
+        if tensor == "symmetric":
+            #                     0    1    2    3    4    5
+            # symmetric tensor:  Sxx, Sxy, Syy, Sxz, Syz, Szz
+            values = values.reshape(1, -1)[:,[0, 1, 3, 1, 2, 4, 3, 4, 5]].flatten()
+        if binary:
+            for values in data:
+                values.astype(values.dtype.newbyteorder(">")).tofile(f, sep="")
+                f.write(b"\n")
+        else:
+            for values in data:
+                values.tofile(f, sep=" ")
+                f.write(b"\n")
+
+if __name__ == "__main__":
+    file_in = "/tmp/pytest-of-honza/pytest-16/test_vtk42_False_mesh17_0/test.dat"

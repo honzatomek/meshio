@@ -116,10 +116,10 @@ def read_buffer(f):
     cell_data = {}
     point_data = {}
 
-    _nsets = {}
-    _nsets_numeric = {}
-    _elsets = {}
-    _elsets_numeric = {}
+    nsets = {}
+    nsets_numeric = {}
+    elsets = {}
+    elsets_numeric = {}
 
     while True:
         line, last_pos = _read_line(f)
@@ -138,10 +138,10 @@ def read_buffer(f):
 
             if "NSET" in params_map.keys():
                 name = params_map["NSET"]
-                if name not in _nsets:
-                    _nsets.setdefault(name, [])
-                    _nsets_numeric[name] = True
-                _nsets[name].extend(point_gids)
+                if name not in nsets:
+                    nsets.setdefault(name, [])
+                    nsets_numeric[name] = True
+                nsets[name].extend(point_gids)
 
         elif keyword.startswith("$ELEMENT"):
             params_map = get_param_map(keyword[1:])
@@ -163,23 +163,23 @@ def read_buffer(f):
             params_map = get_param_map(keyword[1:], required_keys=["NAME"])
             setids, is_numeric = _read_set(f, params_map)
             name = params_map["NAME"]
-            if name not in _nsets:
-                _nsets[name] = []
-                _nsets_numeric[name] = is_numeric
-            _nsets[name].extend(setids)
+            if name not in nsets:
+                nsets[name] = []
+                nsets_numeric[name] = True
+            nsets[name].extend(setids)
             if not is_numeric:
-                _nsets_numeric[name] = False
+                nsets_numeric[name] = False
 
         elif keyword.startswith("$ESET"):
             params_map = get_param_map(keyword[1:], required_keys=["NAME"])
             setids, is_numeric = _read_set(f, params_map)
             name = params_map["NAME"]
-            if name not in _elsets.keys():
-                _elsets[name] = []
-                _elsets_numeric[name] = is_numeric
-            _elsets[name].extend(setids)
+            if name not in elsets.keys():
+                elsets[name] = []
+                elsets_numeric[name] = True
+            elsets[name].extend(setids)
             if not is_numeric:
-                _elsets_numeric[name] = False
+                elsets_numeric[name] = False
 
         else:
             # There are just too many PERMAS keywords to explicitly skip them.
@@ -208,8 +208,8 @@ def read_buffer(f):
     cells = [CellBlock(etype, np.array(cells[etype], dtype=np.int32),
                        cell_gids=cell_gids[etype]) for etype in cells.keys()]
 
-    nsets = _process_nsets(_nsets, _nsets_numeric, point_gids)
-    elsets = _process_elsets(_elsets, _elsets_numeric, cells)
+    nsets = _process_nsets(nsets, nsets_numeric, point_gids)
+    elsets = _process_elsets(elsets, elsets_numeric, cells)
 
     return Mesh(
         points, cells, point_data=point_data, cell_data=cell_data, field_data=field_data,
@@ -286,7 +286,7 @@ def _process_elsets(elsets, elsets_numeric, cells):
             offset += len(cell_block.data)
         if not all(swapped):
             msg += f"ESET NAME = {elset:s} IDs not found:\n"
-            msg += ", ".join([elsets[elset][i] for i in range(len(elsets[elset])) if not swapped[i]]) + "\n"
+            msg += ", ".join([str(elsets[elset][i]) for i in range(len(elsets[elset])) if not swapped[i]]) + "\n"
 
     if msg != "":
         raise ReadError(msg)
@@ -671,13 +671,14 @@ def _write_elements(cells: list, offset: int=4, point_gids: dict=None) -> str:
 
 
 def _write_set_ids(ids: list, maxlinelen: int=80, offset: int=6,
-               gids: dict=None, id_offset=1) -> str:
+               gids: dict=None, id_offset: int=1) -> str:
     # lines = []
     icount = len(ids)
     if gids is not None:
-        ids = [gids[id] for id in ids]
+        ids = np.array(ids).flatten().tolist()
+        ids = [gids[gid] for gid in ids]
     else:
-        ids = [id + id_offset for id in ids]
+        ids = [gid + id_offset for gid in ids]
 
     line = _write_line(ids, offset=offset, continuation=False)
 
@@ -688,7 +689,7 @@ def _write_nodal_set(name: str, points: list, offset: int=4, point_gids: dict=No
     name = name if " " not in name else "'" + name + "'"
     line = " " * offset + f"$NSET NAME = {str(name):s}\n"
     node_gids = None if point_gids is None else {v: k for k, v in point_gids.items()}
-    line += _write_set_ids(points, 80, offset + 2, node_gids, 1)
+    line += _write_set_ids(points, 80, offset + 2, node_gids, id_offset=1)
 
     return line
 
@@ -710,11 +711,11 @@ def _write_element_set(name: str, cellids: list, cells: list, offset=4) -> str:
     for cell_block in cells:
         cell_gids = cell_block.cell_gids
         if cell_gids is None:
-            _element_gids = {i + cell_offset: i for i in range(len(cell_block.data))}
+            _element_gids = {i + cell_offset: i + 1 for i in range(len(cell_block.data))}
         else:
             _element_gids = {v + cell_offset: k for k, v in cell_gids.items()}
         element_gids.update(_element_gids)
-        cell_offset += len(mesh.cells)
+        cell_offset += len(cells)
 
     line += _write_set_ids(cellids, 80, offset + 2, element_gids, id_offset=0)
 
