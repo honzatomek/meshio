@@ -816,7 +816,7 @@ def _write_elements(cells: list, node_gids: dict = None) -> str:
 
     cid = 0
     for i, cell_block in enumerate(cells):
-        cell_gids = cell_block.cell_gids
+        cell_gids = cell_block.gids
         etype = cell_block.type
         FEid = meshio_to_unv_element_type[etype]
 

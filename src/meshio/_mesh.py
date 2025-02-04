@@ -148,6 +148,65 @@ meshio_data_characteristic = {
     "stress resultant":  ["N", "Qy", "Qz", "Mx", "My", "Mz"],
 }
 
+class PointBlock:
+    def __init__(self, points: [list | ArrayLike],
+                 point_gids: [list | dict | ArrayLike] = None):
+        self.coors = points
+        self.gids = point_gids
+
+    def __len__(self) -> int:
+        return self._coors.shape[0]
+
+    def __repr__(self) -> str:
+        lines = ["<meshio PointsBlock object>"]
+        lines += [f"   Number of points: {len(self._coors):n}"]
+        if self.gids:
+            lines += [f"  Min ID: {min(self._gids):n}"]
+            lines += [f"  Max ID: {max(self._gids):n}"]
+        return "\n".join(lines)
+
+    def __getitem__(self, point_id: int) -> ArrayLike:
+        if self._gids:
+            if not point_id in self._gids:
+                raise ValueError(f"Point with ID {point_id:n} does not exist.")
+            else:
+                return self._coors[self._gids.index[point_id], :]
+        else:
+            return self._coors[point_id, :]
+
+    def __iter__(self) -> tuple[int, ArrayLike]:
+        if self._gids:
+            for i in range(self._coors.shape[0]):
+                yield self._gids[i], self._coors[i, :]
+        else:
+            for i, point in enumerate(self._coors):
+                yield i, point
+
+    @property
+    def coors(self) -> ArrayLike:
+        return self._coors
+
+    @coors.setter
+    def coors(self, points: [list | ArrayLike]):
+       self._coors = np.asarray(points)
+
+    @property
+    def gids(self) -> dict:
+        if self._gids:
+            return self._gids
+        else:
+            # return list(range(1, len(self._coors) + 1))
+            return None
+
+    @gids.setter
+    def gids(self, point_gids: [list | dict | ArrayLike] = None):
+        if point_gids is None:
+            self._gids = None
+        elif type(point_gids) is dict:
+            self._gids = point_gids
+        else:
+            self._gids = {i:gid for i, gid in enumerate(list(point_gids))}
+
 
 class CellBlock:
     def __init__(
@@ -155,31 +214,76 @@ class CellBlock:
         cell_type: str,
         data: list | np.ndarray,
         tags: list[str] | None = None,
-        cell_gids: dict = None
+        cell_gids: [list | dict | ArrayLike] = None
     ):
         self.type = cell_type
         self.data = data
-        self.cell_gids = cell_gids   # original element IDs
+        self.gids = cell_gids   # original element IDs
 
-        if cell_type.startswith("polyhedron"):
-            self.dim = 3
-        else:
-            self.data = np.asarray(self.data)
-            self.dim = topological_dimension[cell_type]
+        # if cell_type.startswith("polyhedron"):
+        #     self.dim = 3
+        # else:
+        #     self.data = np.asarray(self.data)
+        #     self.dim = topological_dimension[cell_type]
 
         self.tags = [] if tags is None else tags
 
     def __repr__(self):
         items = [
-            "meshio CellBlock",
-            f"type: {self.type}",
-            f"num cells: {len(self.data)}",
-            f"tags: {self.tags}",
+            "<meshio CellBlock object>",
+            f"  type: {self.type}",
+            f"  num cells: {len(self.data)}",
+            f"  tags: {self.tags}",
         ]
         return "<" + ", ".join(items) + ">"
 
     def __len__(self):
         return len(self.data)
+
+    @property
+    def type(self) -> str:
+        return self._type
+
+    @type.setter
+    def type(self, cell_type: str):
+        if cell_type not in topological_dimension.keys():
+            warn(f"Unknown cell type {cell_type:s}.")
+        self._type = cell_type
+
+    @property
+    def data(self) -> [ArrayLike, list]:
+        return self._data
+
+    @data.setter
+    def data(self, data: ArrayLike):
+        # polyhedron data cannot be converted to numpy arrays
+        # because the sublists don't all have the same length
+        if self._type.startswith("polyhedron"):
+            self._data = data
+            self._dim = 3
+        else:
+            self._data = np.asarray(data)
+            self._dim = topological_dimension[self._type]
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def gids(self) -> dict:
+        if self._gids is None:
+            return None
+        else:
+            return {i: gid for i, gid in enumerate(self._gids)}
+
+    @gids.setter
+    def gids(self, cell_gids: [list | dict | ArrayLike]):
+        if cell_gids is None:
+            self._gids = None
+        elif type(cell_gids) is dict:
+            self._gids = list(cell_gids.values())
+        else:
+            self._gids = list(cell_gids)
 
 
 class ID:
@@ -547,8 +651,11 @@ class Mesh:
         point_gids: dict = None,   # original point ids
         # load_case: LoadCase = None,  # added load case container
     ):
-        self.points = np.asarray(points)
-        self.point_gids = point_gids   # point IDs
+        # self.points = np.asarray(points)
+        # self.point_gids = point_gids   # point IDs
+
+        self._points = PointBlock(points, point_gids)
+
         if isinstance(cells, dict):
             # Let's not deprecate this for now.
             # warn(
@@ -622,7 +729,7 @@ class Mesh:
                     )
 
     def __repr__(self):
-        lines = ["<meshio mesh object>", f"  Number of points: {len(self.points)}"]
+        lines = ["<meshio mesh object>", f"  Number of points: {len(self._points)}"]
         special_cells = [
             "polygon",
             "polyhedron",
@@ -685,6 +792,22 @@ class Mesh:
         return np.concatenate(
             [d for c, d in zip(self.cells, self.cell_data[name]) if c.type == cell_type]
         )
+
+    @property
+    def points(self) -> ArrayLike:
+        return self._points.coors
+
+    @points.setter
+    def points(self, points: ArrayLike):
+        self._points = PointBlock(points, None)
+
+    @property
+    def point_gids(self) -> dict:
+        return self._points.gids
+
+    @point_gids.setter
+    def point_gids(self, point_gids: [list | dict | ArrayLike]):
+        self._points.gids = point_gids
 
     @property
     def cells_dict(self):

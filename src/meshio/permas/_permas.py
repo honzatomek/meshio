@@ -154,10 +154,10 @@ def read_buffer(f):
 
             if "ESET" in params_map.keys():
                 name = params_map["ESET"]
-                if name not in _elsets:
-                    _elsets[name] = []
-                    _elsets_numeric[name] = True
-                _elsets[name].extend(_cell_gids)
+                if name not in elsets:
+                    elsets[name] = []
+                    elsets_numeric[name] = True
+                elsets[name].extend(_cell_gids)
 
         elif keyword.startswith("$NSET"):
             params_map = get_param_map(keyword[1:], required_keys=["NAME"])
@@ -280,8 +280,8 @@ def _process_elsets(elsets, elsets_numeric, cells):
         offset = 0
         for cell_block in cells:
             for i, eid in enumerate(elsets[elset]):
-                if eid in cell_block.cell_gids.keys():
-                    elsets[elset][i] = cell_block.cell_gids[eid] + offset
+                if eid in cell_block.gids.keys():
+                    elsets[elset][i] = cell_block.gids[eid] + offset
                     swapped[i] = True
             offset += len(cell_block.data)
         if not all(swapped):
@@ -323,28 +323,31 @@ def _read_line(f: io.TextIOWrapper) -> (str, int):
     """
     last_pos = f.tell()                       # previous line in file
     line = f.readline()                       # read current line
-    if not line:                              # EOF
+    if not line or line == "$FIN":            # EOF
         return None, last_pos                 # return None, previous position
     line = _strip_line(line)                  # strip witespaces and comments
+    # if line == "":                            # in case of empty or commented line
+    #     return line, last_pos
+    # TODO:
     if line == "":                            # in case of empty or commented line
-        return line, last_pos
+        line, last_pos = _read_line(f)        # continue reading
     while True:                               # cycle through next lines
         last_pos1 = f.tell()                  # last position in file
         line1 = f.readline()                  # read next line
-        if not line1:                         # next line is EOF
+        if not line1 or line1 == "$FIN":      # next line is EOF
             f.seek(last_pos1)                 # revert back
             break
         line1 = _strip_line(line1)            # strip whitespaces and comments
         if line1.startswith("&"):             # line is continuation
             last_pos = last_pos1              # update last position
-            line += " " + line1[1:].strip()   # concatenate lines
+            line += line1[1:]                 # concatenate lines
         elif line1 == "":                     # next line is empty or commented
             last_pos = last_pos1              # update last position
         else:                                 # next line is normal
             f.seek(last_pos1)                 # revert back
             break
 
-    line = _strip_line(line)                  # one more strip in case of commented or empty
+    # line = _strip_line(line)                  # one more strip in case of commented or empty
                                               # lines in the middle of continuation block
     return line, last_pos
 
@@ -361,6 +364,11 @@ def _strip_line(line: str) -> str:
         line = ""
     if "!" in line:                           # discard comment at EOL
         line = line.split("!")[0].strip(" ")
+    if line.startswith("&"):                  # continuation line
+        line = line.replace("&", "& ")        # make it so that 2nd character is space
+        while "  " in line:                   # replace multiple spaces with single ones
+            line = line.replace("  ", " ")    # in case there was space betwee & and the
+                                              # rest of the line
     return line
 
 
@@ -654,7 +662,7 @@ def _write_elements(cells: list, offset: int=4, point_gids: dict=None) -> str:
     eid = 0
     for cell_block in cells:
         node_idcs = cell_block.data
-        cell_gids = cell_block.cell_gids
+        cell_gids = cell_block.gids
         element_gids = None if cell_gids is None else {v: k for k, v in cell_gids.items()}
 
         line += " " * offset + "$ELEMENT TYPE = " + meshio_to_permas_type[cell_block.type] + "\n"
@@ -709,7 +717,7 @@ def _write_element_set(name: str, cellids: list, cells: list, offset=4) -> str:
     cell_offset = 0
     element_gids = {}
     for cell_block in cells:
-        cell_gids = cell_block.cell_gids
+        cell_gids = cell_block.gids
         if cell_gids is None:
             _element_gids = {i + cell_offset: i + 1 for i in range(len(cell_block.data))}
         else:
